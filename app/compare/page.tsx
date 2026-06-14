@@ -6,25 +6,25 @@ import {
   DollarSign,
   Eye,
   Film,
-  LineChart,
-  PlaySquare,
-  Users,
-  Youtube
+  Users
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { AppLogo } from "@/components/app-logo";
+import { CompareFilterChangeBoundary } from "@/components/compare-filter-change-boundary";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { LogoutButton } from "@/components/logout-button";
 import { YoutubeChannelSelect } from "@/components/youtube-channel-select";
-import { YoutubeCompareSyncActions } from "@/components/youtube-compare-sync-actions";
 import { YoutubePdfDownloadButton } from "@/components/youtube-pdf-download-button";
 import { YoutubeSubmitButton } from "@/components/youtube-submit-button";
+import { YoutubeVideoTable } from "@/components/youtube-video-table";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { canAccountViewRevenue, getAccountChannelAccess, isAuthConfigured } from "@/lib/auth";
 import { requireCurrentAccount } from "@/lib/server-auth";
+import { ensureYoutubeAnalyticsRangeData, getIncompleteYoutubeAnalyticsChannelIds } from "@/lib/youtube-auto-sync";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import {
   getYoutubeComparisonDashboard,
@@ -53,21 +53,62 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
   const account = await requireCurrentAccount("/compare");
   const canViewRevenue = canAccountViewRevenue(account);
   const filters = normalizeYoutubeComparisonFilters(params);
-  const dashboard = await getYoutubeComparisonDashboard(filters, getAccountChannelAccess(account));
+  let dashboard = await getYoutubeComparisonDashboard(filters, getAccountChannelAccess(account));
   const cmsConfigured = isYouTubeCmsConfigured();
+  let autoSyncError = "";
+
+  if (dashboard.schemaReady && cmsConfigured) {
+    const channelsToSync = getDashboardSyncChannels(dashboard.filters.channelId, dashboard.channels);
+    try {
+      await ensureYoutubeAnalyticsRangeData({
+        channels: channelsToSync,
+        endDate: dashboard.filters.primaryEndDate,
+        startDate: dashboard.filters.primaryStartDate
+      });
+      await ensureYoutubeAnalyticsRangeData({
+        channels: channelsToSync,
+        endDate: dashboard.filters.comparisonEndDate,
+        startDate: dashboard.filters.comparisonStartDate
+      });
+      dashboard = await getYoutubeComparisonDashboard(filters, getAccountChannelAccess(account));
+    } catch (error) {
+      const isCompleteAfterSync = await hasCompleteComparisonDataAfterSync({
+        channels: channelsToSync,
+        comparisonEndDate: dashboard.filters.comparisonEndDate,
+        comparisonStartDate: dashboard.filters.comparisonStartDate,
+        primaryEndDate: dashboard.filters.primaryEndDate,
+        primaryStartDate: dashboard.filters.primaryStartDate
+      });
+
+      if (isCompleteAfterSync) {
+        dashboard = await getYoutubeComparisonDashboard(filters, getAccountChannelAccess(account));
+      } else {
+        autoSyncError = getErrorMessage(error);
+      }
+    }
+  }
   const selectedChannel = dashboard.channels.find((channel) => channel.channelId === dashboard.filters.channelId);
-  const hasSelectedChannel = dashboard.channels.some((channel) => channel.channelId === dashboard.filters.channelId);
   const canEvaluateDataCoverage = dashboard.schemaReady && cmsConfigured;
   const hasComparisonData = canEvaluateDataCoverage && dashboard.primary.hasData && dashboard.comparison.hasData;
+  const canShowComparisonData = hasComparisonData && !autoSyncError;
+  const dashboardRenderKey = [
+    dashboard.filters.primaryStartDate,
+    dashboard.filters.primaryEndDate,
+    dashboard.filters.comparisonStartDate,
+    dashboard.filters.comparisonEndDate,
+    dashboard.filters.channelId,
+    dashboard.filters.contentType,
+    canShowComparisonData ? "loaded" : "empty",
+    autoSyncError,
+    Date.now()
+  ].join("|");
 
   return (
     <main className="youtube-report-page min-h-screen p-4 md:p-6">
       <div className="youtube-report-shell mx-auto flex max-w-7xl flex-col gap-4">
         <header className="youtube-report-header flex flex-col gap-4 rounded-lg border bg-card/95 p-4 shadow-sm md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-red-500/10 p-3 text-red-600 dark:text-red-400">
-              <Youtube className="size-7" />
-            </div>
+            <AppLogo />
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-2xl font-black">Channel Pulse</h1>
@@ -86,7 +127,7 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
           </div>
 
           <div className="youtube-print-hidden flex items-center gap-2">
-            {hasComparisonData ? (
+            {canShowComparisonData ? (
               <YoutubePdfDownloadButton
                 filename={`youtube-compare-${dashboard.primary.startDate}-to-${dashboard.primary.endDate}-vs-${dashboard.comparison.startDate}-to-${dashboard.comparison.endDate}-${slugify(selectedChannel?.title ?? "channel")}`}
               />
@@ -123,56 +164,61 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
           />
         ) : null}
 
-        <section className="youtube-print-hidden rounded-lg border bg-card/95 p-4 shadow-sm">
-          <form className="grid gap-4" action="/compare" method="get">
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-              <DateInput label="Range 1 start" name="primaryStartDate" value={dashboard.filters.primaryStartDate} />
-              <DateInput label="Range 1 end" name="primaryEndDate" value={dashboard.filters.primaryEndDate} />
-              <DateInput label="Range 2 start" name="comparisonStartDate" value={dashboard.filters.comparisonStartDate} />
-              <DateInput label="Range 2 end" name="comparisonEndDate" value={dashboard.filters.comparisonEndDate} />
-            </div>
+        <CompareFilterChangeBoundary
+          renderKey={dashboardRenderKey}
+          filters={
+            <section className="youtube-print-hidden rounded-lg border bg-card/95 p-4 shadow-sm">
+              <form className="grid gap-4" action="/compare" method="get">
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <DateInput label="Range 1 start" name="primaryStartDate" value={dashboard.filters.primaryStartDate} />
+                  <DateInput label="Range 1 end" name="primaryEndDate" value={dashboard.filters.primaryEndDate} />
+                  <DateInput label="Range 2 start" name="comparisonStartDate" value={dashboard.filters.comparisonStartDate} />
+                  <DateInput label="Range 2 end" name="comparisonEndDate" value={dashboard.filters.comparisonEndDate} />
+                </div>
 
-            <div className="grid gap-3 md:grid-cols-[minmax(18rem,1.5fr)_minmax(12rem,0.8fr)_auto]">
-              <YoutubeChannelSelect
-                canRefreshChannels={account.role === "admin"}
-                channels={dashboard.channels}
-                disabled={!dashboard.schemaReady || !cmsConfigured}
-                name="channel"
-                value={dashboard.filters.channelId}
-              />
-              <FilterSelect label="Format" name="contentType" value={dashboard.filters.contentType}>
-                <option value="all">All formats</option>
-                <option value="short">Short form</option>
-                <option value="long">Long form</option>
-                <option value="live">Live</option>
-                <option value="unknown">Unknown</option>
-              </FilterSelect>
+                <div className="grid gap-3 md:grid-cols-[minmax(18rem,1.5fr)_minmax(12rem,0.8fr)_auto]">
+                  <YoutubeChannelSelect
+                    canRefreshChannels={account.role === "admin"}
+                    channels={dashboard.channels}
+                    disabled={!dashboard.schemaReady || !cmsConfigured}
+                    name="channel"
+                    value={dashboard.filters.channelId}
+                  />
+                  <FilterSelect label="Format" name="contentType" value={dashboard.filters.contentType}>
+                    <option value="all">All formats</option>
+                    <option value="short">Short form</option>
+                    <option value="long">Long form</option>
+                    <option value="live">Live</option>
+                    <option value="unknown">Unknown</option>
+                  </FilterSelect>
 
-              <div className="flex items-end">
-                <YoutubeSubmitButton />
-              </div>
-            </div>
-          </form>
-        </section>
-
-        {canEvaluateDataCoverage && !hasComparisonData ? (
-          <>
+                  <div className="flex items-end">
+                    <YoutubeSubmitButton />
+                  </div>
+                </div>
+              </form>
+            </section>
+          }
+        >
+          {canEvaluateDataCoverage && (!canShowComparisonData || autoSyncError) ? (
             <StatusPanel
-              title="Sync both comparison ranges"
-              message="Both selected date ranges need synced channel data before the comparison can be shown."
+              title="Data is unavailable"
+              message={
+                autoSyncError ||
+                "Channel Pulse could not load data for the selected comparison ranges. The YouTube CMS did not return data for this channel and date range."
+              }
             />
-            <div className="youtube-print-hidden">
-              <SyncPanel
-                disabled={!dashboard.schemaReady || !cmsConfigured || !hasSelectedChannel}
-                filters={dashboard.filters}
-              />
-            </div>
-          </>
-        ) : null}
+          ) : null}
 
-        {hasComparisonData ? (
-          <>
-            <section className="youtube-report-kpi-grid grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {canShowComparisonData ? (
+            <>
+            <section
+              className={
+                canViewRevenue
+                  ? "youtube-report-kpi-grid grid items-start gap-4 md:grid-cols-2 xl:grid-cols-4"
+                  : "youtube-report-kpi-grid grid items-start gap-4 md:grid-cols-3"
+              }
+            >
               <ComparisonMetricCard
                 title="Views"
                 rangeOneValue={formatCompactNumber(dashboard.deltas.views.current)}
@@ -209,33 +255,48 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
               ) : null}
             </section>
 
-            <section className="youtube-report-two-col grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-              {canViewRevenue ? (
+            {canViewRevenue ? (
+              <section className="youtube-report-two-col grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
                 <ComparisonTotalsCard primary={dashboard.primary.totals} comparison={dashboard.comparison.totals} />
-              ) : null}
-              <FormatComparisonCard rows={dashboard.contentTypeComparison} />
-            </section>
+                <FormatComparisonCard rows={dashboard.contentTypeComparison} />
+              </section>
+            ) : (
+              <section>
+                <FormatComparisonCard rows={dashboard.contentTypeComparison} />
+              </section>
+            )}
 
             <section className="youtube-report-two-col youtube-compare-video-section grid gap-4 xl:grid-cols-2">
-              <VideoTable title="Top Viewed Videos In Range 1" rows={dashboard.topViewedRangeOneVideos} metric="views" />
-              <VideoTable title="Top Viewed Videos In Range 2" rows={dashboard.topViewedRangeTwoVideos} metric="views" />
+              <VideoTable
+                title="Top Viewed Videos In Range 1"
+                rows={toVideoTableRows(dashboard.topViewedRangeOneVideos, "views")}
+                metric="views"
+              />
+              <VideoTable
+                title="Top Viewed Videos In Range 2"
+                rows={toVideoTableRows(dashboard.topViewedRangeTwoVideos, "views")}
+                metric="views"
+              />
             </section>
 
             {canViewRevenue ? (
               <section className="youtube-report-two-col youtube-compare-video-section grid gap-4 xl:grid-cols-2">
-                <VideoTable title="Top Revenue Videos In Range 1" rows={dashboard.topRevenueRangeOneVideos} metric="revenue" />
-                <VideoTable title="Top Revenue Videos In Range 2" rows={dashboard.topRevenueRangeTwoVideos} metric="revenue" />
+                <VideoTable
+                  title="Top Revenue Videos In Range 1"
+                  rows={toVideoTableRows(dashboard.topRevenueRangeOneVideos, "revenue")}
+                  metric="revenue"
+                />
+                <VideoTable
+                  title="Top Revenue Videos In Range 2"
+                  rows={toVideoTableRows(dashboard.topRevenueRangeTwoVideos, "revenue")}
+                  metric="revenue"
+                />
               </section>
             ) : null}
 
-            <div className="youtube-print-hidden">
-              <SyncPanel
-                disabled={!dashboard.schemaReady || !cmsConfigured || !hasSelectedChannel}
-                filters={dashboard.filters}
-              />
-            </div>
-          </>
-        ) : null}
+            </>
+          ) : null}
+        </CompareFilterChangeBoundary>
       </div>
     </main>
   );
@@ -317,27 +378,46 @@ function ComparisonMetricCard({
         <div className="mt-4 grid gap-2">
           <ComparisonValueRow label="Range 1" value={rangeOneValue} />
           <ComparisonValueRow label="Range 2" value={rangeTwoValue} />
-          <ComparisonValueRow label="Difference" value={deltaLabel} emphasized />
+          <ComparisonValueRow label="Difference" value={deltaLabel} emphasized tone={isPositive ? "positive" : "negative"} />
         </div>
       </CardContent>
     </Card>
   );
 }
 
-function ComparisonValueRow({ label, value, emphasized = false }: { label: string; value: string; emphasized?: boolean }) {
-  return (
-    <div
-      className={
-        emphasized
+function ComparisonValueRow({
+  label,
+  value,
+  emphasized = false,
+  tone = "neutral"
+}: {
+  label: string;
+  value: string;
+  emphasized?: boolean;
+  tone?: "neutral" | "positive" | "negative";
+}) {
+  const rowClass =
+    emphasized && tone === "positive"
+      ? "rounded-lg border border-emerald-300 bg-emerald-50 p-3 dark:border-emerald-800 dark:bg-emerald-950/30"
+      : emphasized && tone === "negative"
+        ? "rounded-lg border border-red-300 bg-red-50 p-3 dark:border-red-900 dark:bg-red-950/30"
+        : emphasized
           ? "rounded-lg border border-primary/40 bg-primary/10 p-3"
-          : "rounded-lg border bg-background/70 p-3"
-      }
-    >
+          : "rounded-lg border bg-background/70 p-3";
+  const valueClass =
+    emphasized && tone === "positive"
+      ? "text-lg font-black text-emerald-700 dark:text-emerald-300"
+      : emphasized && tone === "negative"
+        ? "text-lg font-black text-red-700 dark:text-red-300"
+        : emphasized
+          ? "text-lg font-black text-foreground"
+          : "text-base font-black text-foreground";
+
+  return (
+    <div className={rowClass}>
       <div className="flex items-center justify-between gap-3">
         <span className="text-xs font-semibold text-muted-foreground">{label}</span>
-        <span className={emphasized ? "text-lg font-black text-foreground" : "text-base font-black text-foreground"}>
-          {value}
-        </span>
+        <span className={valueClass}>{value}</span>
       </div>
     </div>
   );
@@ -349,37 +429,43 @@ function ComparisonTotalsCard({ primary, comparison }: { primary: MetricTotals; 
       label: "Estimated revenue",
       primary: formatCurrency(primary.estimatedRevenue),
       comparison: formatCurrency(comparison.estimatedRevenue),
-      difference: formatSignedCurrency(primary.estimatedRevenue - comparison.estimatedRevenue)
+      difference: formatSignedCurrency(primary.estimatedRevenue - comparison.estimatedRevenue),
+      differenceValue: primary.estimatedRevenue - comparison.estimatedRevenue
     },
     {
       label: "Estimated ad revenue",
       primary: formatCurrency(primary.estimatedAdRevenue),
       comparison: formatCurrency(comparison.estimatedAdRevenue),
-      difference: formatSignedCurrency(primary.estimatedAdRevenue - comparison.estimatedAdRevenue)
+      difference: formatSignedCurrency(primary.estimatedAdRevenue - comparison.estimatedAdRevenue),
+      differenceValue: primary.estimatedAdRevenue - comparison.estimatedAdRevenue
     },
     {
       label: "Gross revenue",
       primary: formatCurrency(primary.grossRevenue),
       comparison: formatCurrency(comparison.grossRevenue),
-      difference: formatSignedCurrency(primary.grossRevenue - comparison.grossRevenue)
+      difference: formatSignedCurrency(primary.grossRevenue - comparison.grossRevenue),
+      differenceValue: primary.grossRevenue - comparison.grossRevenue
     },
     {
       label: "Monetized playbacks",
       primary: formatCompactNumber(primary.monetizedPlaybacks),
       comparison: formatCompactNumber(comparison.monetizedPlaybacks),
-      difference: formatSignedCompactNumber(primary.monetizedPlaybacks - comparison.monetizedPlaybacks)
+      difference: formatSignedCompactNumber(primary.monetizedPlaybacks - comparison.monetizedPlaybacks),
+      differenceValue: primary.monetizedPlaybacks - comparison.monetizedPlaybacks
     },
     {
       label: "Ad impressions",
       primary: formatCompactNumber(primary.adImpressions),
       comparison: formatCompactNumber(comparison.adImpressions),
-      difference: formatSignedCompactNumber(primary.adImpressions - comparison.adImpressions)
+      difference: formatSignedCompactNumber(primary.adImpressions - comparison.adImpressions),
+      differenceValue: primary.adImpressions - comparison.adImpressions
     },
     {
       label: "Playback CPM",
       primary: formatCurrency(calculatePlaybackCpm(primary)),
       comparison: formatCurrency(calculatePlaybackCpm(comparison)),
-      difference: formatSignedCurrency(calculatePlaybackCpm(primary) - calculatePlaybackCpm(comparison))
+      difference: formatSignedCurrency(calculatePlaybackCpm(primary) - calculatePlaybackCpm(comparison)),
+      differenceValue: calculatePlaybackCpm(primary) - calculatePlaybackCpm(comparison)
     }
   ];
 
@@ -408,7 +494,13 @@ function ComparisonTotalsCard({ primary, comparison }: { primary: MetricTotals; 
             <span className="whitespace-nowrap text-right text-sm font-semibold tabular-nums text-foreground">
               {row.comparison}
             </span>
-            <span className="whitespace-nowrap text-right text-sm font-black tabular-nums text-foreground">
+            <span
+              className={
+                row.differenceValue >= 0
+                  ? "whitespace-nowrap text-right text-sm font-black tabular-nums text-emerald-700 dark:text-emerald-300"
+                  : "whitespace-nowrap text-right text-sm font-black tabular-nums text-red-700 dark:text-red-300"
+              }
+            >
               {row.difference}
             </span>
           </div>
@@ -482,129 +574,8 @@ function ComparisonBar({ label, value, max, muted = false }: { label: string; va
   );
 }
 
-function VideoTable({
-  title,
-  rows,
-  metric
-}: {
-  title: string;
-  rows: VideoPerformanceRow[];
-  metric: "views" | "revenue";
-}) {
-  return (
-    <Card className="youtube-video-table shadow-sm">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <LineChart className="size-4 text-primary" />
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="youtube-video-table-content space-y-3">
-        {rows.length > 0 ? (
-          rows.map((row, index) => (
-            <VideoListItem
-              key={row.videoId}
-              index={index}
-              videoId={row.videoId}
-              title={row.title}
-              channelTitle={row.channelTitle}
-              contentType={row.contentType}
-              value={metric === "revenue" ? formatCurrency(row.estimatedRevenue) : formatCompactNumber(row.views)}
-              subvalue={`${formatCompactNumber(row.estimatedMinutesWatched / 60)} hrs`}
-            />
-          ))
-        ) : (
-          <EmptyVideoMessage />
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function VideoListItem({
-  index,
-  videoId,
-  title,
-  channelTitle,
-  contentType,
-  value,
-  subvalue
-}: {
-  index: number;
-  videoId: string;
-  title: string;
-  channelTitle: string;
-  contentType: ContentTypeFilter;
-  value: string;
-  subvalue: string;
-}) {
-  return (
-    <div className="youtube-video-row grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-lg border bg-background/70 p-3">
-      <div className="youtube-video-rank flex size-8 items-center justify-center rounded-md bg-secondary text-xs font-black">
-        {index + 1}
-      </div>
-      <div className="min-w-0">
-        <a
-          href={getVideoUrl(videoId)}
-          target="_blank"
-          rel="noreferrer"
-          className="youtube-video-title block truncate text-sm font-bold hover:text-primary"
-        >
-          {title}
-        </a>
-        <div className="youtube-video-meta mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
-          <span>{channelTitle}</span>
-          <span>{contentTypeLabel(contentType)}</span>
-        </div>
-      </div>
-      <div className="text-right">
-        <p className="youtube-video-value text-sm font-black">{value}</p>
-        <p className="youtube-video-subvalue text-xs text-muted-foreground">{subvalue}</p>
-      </div>
-    </div>
-  );
-}
-
-function EmptyVideoMessage() {
-  return <p className="rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground">No videos found for this filter.</p>;
-}
-
-function SyncPanel({
-  disabled,
-  filters
-}: {
-  disabled: boolean;
-  filters: {
-    channelId: string;
-    primaryStartDate: string;
-    primaryEndDate: string;
-    comparisonStartDate: string;
-    comparisonEndDate: string;
-  };
-}) {
-  return (
-    <Card className="shadow-sm">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <PlaySquare className="size-4 text-primary" />
-          Sync Data
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="rounded-lg border bg-background/70 p-3 text-sm text-muted-foreground">
-          Click the Sync button to sync the selected comparison ranges before viewing this dashboard.
-        </p>
-        <YoutubeCompareSyncActions
-          channelId={filters.channelId}
-          primaryStartDate={filters.primaryStartDate}
-          primaryEndDate={filters.primaryEndDate}
-          comparisonStartDate={filters.comparisonStartDate}
-          comparisonEndDate={filters.comparisonEndDate}
-          disabled={disabled}
-        />
-      </CardContent>
-    </Card>
-  );
+function VideoTable({ metric: _metric, ...props }: Parameters<typeof YoutubeVideoTable>[0] & { metric?: "views" | "revenue" }) {
+  return <YoutubeVideoTable {...props} />;
 }
 
 function MiniMetric({ label, value }: { label: string; value: string }) {
@@ -625,8 +596,48 @@ function StatusPanel({ title, message }: { title: string; message: string }) {
   );
 }
 
-function getVideoUrl(videoId: string) {
-  return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
+function getDashboardSyncChannels(channelId: string, channels: Array<{ channelId: string }>) {
+  if (channelId === "all") return channels;
+  return channels.filter((channel) => channel.channelId === channelId);
+}
+
+async function hasCompleteComparisonDataAfterSync({
+  channels,
+  primaryStartDate,
+  primaryEndDate,
+  comparisonStartDate,
+  comparisonEndDate
+}: {
+  channels: Array<{ channelId: string }>;
+  primaryStartDate: string;
+  primaryEndDate: string;
+  comparisonStartDate: string;
+  comparisonEndDate: string;
+}) {
+  try {
+    const [primaryMissingChannelIds, comparisonMissingChannelIds] = await Promise.all([
+      getIncompleteYoutubeAnalyticsChannelIds({
+        channels,
+        endDate: primaryEndDate,
+        startDate: primaryStartDate
+      }),
+      getIncompleteYoutubeAnalyticsChannelIds({
+        channels,
+        endDate: comparisonEndDate,
+        startDate: comparisonStartDate
+      })
+    ]);
+
+    return primaryMissingChannelIds.length === 0 && comparisonMissingChannelIds.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "Automatic data sync failed.";
 }
 
 function contentTypeLabel(value: ContentTypeFilter) {
@@ -688,6 +699,16 @@ function formatSignedCurrency(value: number) {
 
 function formatSignedPercent(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
+}
+
+function toVideoTableRows(rows: VideoPerformanceRow[], metric: "views" | "revenue") {
+  return rows.map((row) => ({
+    videoId: row.videoId,
+    title: row.title,
+    value: metric === "revenue" ? formatCurrency(row.estimatedRevenue) : formatCompactNumber(row.views),
+    subvalue: `${formatCompactNumber(row.estimatedMinutesWatched / 60)} hrs`,
+    meta: [row.channelTitle, contentTypeLabel(row.contentType)]
+  }));
 }
 
 function calculatePlaybackCpm(totals: MetricTotals) {

@@ -12,6 +12,8 @@ import {
 test("normalizes focused YouTube channel titles", () => {
   assert.equal(normalizeYouTubeChannelTitle("TOne News"), normalizeYouTubeChannelTitle("Tone News"));
   assert.equal(isFocusedYouTubeChannelTitle("TeluguOne Music"), true);
+  assert.equal(isFocusedYouTubeChannelTitle("KidsOne Hindi"), true);
+  assert.equal(isFocusedYouTubeChannelId("UC2J1Ytfh69Tca-4-Ur1bjaw"), true);
   assert.equal(isFocusedYouTubeChannelId("UCXjhJbviBl0M4JAC3cxDXqA"), true);
   assert.equal(isFocusedYouTubeChannelTitle("Unrelated CMS Channel"), false);
   assert.equal(isFocusedYouTubeChannelId("UC-unrelated"), false);
@@ -30,5 +32,5 @@ test("filters CMS channels by stored channel IDs and uses management labels", ()
     "Navvula TV",
     "Old Songs Telugu"
   ]);
-  assert.equal(FOCUSED_YOUTUBE_CHANNELS.length, 14);
+  assert.equal(FOCUSED_YOUTUBE_CHANNELS.length, 23);
 });

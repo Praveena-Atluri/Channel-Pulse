@@ -11,6 +11,8 @@ type YoutubeAutoSubmitFormProps = {
   className?: string;
 };
 
+const SUBMIT_TIMEOUT_MS = 300_000;
+
 export function YoutubeAutoSubmitForm({ action, children, className }: YoutubeAutoSubmitFormProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -29,7 +31,7 @@ export function YoutubeAutoSubmitForm({ action, children, className }: YoutubeAu
 
     const timeout = window.setTimeout(() => {
       setIsSubmitting(false);
-    }, 30000);
+    }, SUBMIT_TIMEOUT_MS);
 
     return () => window.clearTimeout(timeout);
   }, [isSubmitting]);
@@ -48,10 +50,6 @@ export function YoutubeAutoSubmitForm({ action, children, className }: YoutubeAu
     startTransition(() => {
       if (nextUrl === currentUrl) {
         router.refresh();
-        window.setTimeout(() => {
-          setIsSubmitting(false);
-          publishFilterLoading(false);
-        }, 500);
         return;
       }
 

@@ -4,40 +4,40 @@
 
 @layer base {
   :root {
-    --background: 38 47% 96%;
-    --foreground: 24 30% 14%;
+    --background: 214 100% 97%;
+    --foreground: 222 65% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 24 30% 14%;
-    --primary: 17 82% 45%;
-    --primary-foreground: 40 60% 97%;
-    --secondary: 45 70% 90%;
-    --secondary-foreground: 24 30% 14%;
-    --muted: 42 35% 91%;
-    --muted-foreground: 24 14% 39%;
-    --accent: 155 35% 84%;
-    --accent-foreground: 168 43% 16%;
-    --border: 25 24% 81%;
-    --input: 25 24% 81%;
-    --ring: 17 82% 45%;
+    --card-foreground: 222 65% 12%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 214 95% 93%;
+    --secondary-foreground: 222 65% 14%;
+    --muted: 213 50% 93%;
+    --muted-foreground: 218 18% 42%;
+    --accent: 190 80% 90%;
+    --accent-foreground: 222 70% 18%;
+    --border: 214 38% 84%;
+    --input: 214 38% 84%;
+    --ring: 221 83% 53%;
     --radius: 1rem;
   }
 
   .dark {
-    --background: 24 20% 10%;
-    --foreground: 38 30% 92%;
-    --card: 24 15% 14%;
-    --card-foreground: 38 30% 92%;
-    --primary: 17 82% 55%;
-    --primary-foreground: 40 60% 97%;
-    --secondary: 24 18% 20%;
-    --secondary-foreground: 38 30% 92%;
-    --muted: 24 15% 18%;
-    --muted-foreground: 38 20% 60%;
-    --accent: 155 25% 28%;
-    --accent-foreground: 155 35% 84%;
-    --border: 24 15% 22%;
-    --input: 24 15% 22%;
-    --ring: 17 82% 55%;
+    --background: 224 70% 7%;
+    --foreground: 213 55% 94%;
+    --card: 224 55% 11%;
+    --card-foreground: 213 55% 94%;
+    --primary: 213 94% 68%;
+    --primary-foreground: 224 70% 8%;
+    --secondary: 223 45% 18%;
+    --secondary-foreground: 213 55% 94%;
+    --muted: 223 38% 16%;
+    --muted-foreground: 215 24% 68%;
+    --accent: 197 62% 24%;
+    --accent-foreground: 190 80% 88%;
+    --border: 223 34% 24%;
+    --input: 223 34% 24%;
+    --ring: 213 94% 68%;
   }
 
   * {
@@ -47,16 +47,16 @@
   body {
     @apply bg-background text-foreground antialiased;
     background-image:
-      radial-gradient(circle at top left, rgba(245, 158, 11, 0.14), transparent 24%),
-      radial-gradient(circle at top right, rgba(16, 185, 129, 0.12), transparent 20%),
-      linear-gradient(180deg, rgba(255, 251, 235, 0.9), rgba(254, 243, 199, 0.24));
+      radial-gradient(circle at top left, rgba(37, 99, 235, 0.14), transparent 24%),
+      radial-gradient(circle at top right, rgba(6, 182, 212, 0.12), transparent 20%),
+      linear-gradient(180deg, rgba(239, 246, 255, 0.96), rgba(219, 234, 254, 0.34));
   }
 
   html.dark body {
     background-image:
-      radial-gradient(circle at top left, rgba(245, 158, 11, 0.06), transparent 24%),
-      radial-gradient(circle at top right, rgba(16, 185, 129, 0.05), transparent 20%),
-      linear-gradient(180deg, rgba(30, 20, 14, 0.95), rgba(20, 14, 8, 0.8));
+      radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 24%),
+      radial-gradient(circle at top right, rgba(34, 211, 238, 0.08), transparent 20%),
+      linear-gradient(180deg, rgba(8, 17, 42, 0.97), rgba(5, 12, 31, 0.9));
   }
 }
 
@@ -69,20 +69,20 @@
   :root,
   .dark {
     --background: 0 0% 100%;
-    --foreground: 24 20% 12%;
+    --foreground: 222 65% 12%;
     --card: 0 0% 100%;
-    --card-foreground: 24 20% 12%;
-    --primary: 17 82% 45%;
-    --secondary: 35 32% 92%;
-    --muted: 35 24% 94%;
-    --muted-foreground: 24 12% 34%;
-    --border: 28 18% 78%;
+    --card-foreground: 222 65% 12%;
+    --primary: 221 83% 53%;
+    --secondary: 214 95% 93%;
+    --muted: 213 50% 95%;
+    --muted-foreground: 218 18% 42%;
+    --border: 214 38% 84%;
   }
 
   html,
   body {
     background: #ffffff !important;
-    color: #1f1a17 !important;
+    color: #0b1736 !important;
   }
 
   body {
@@ -141,17 +141,14 @@
   }
 
   .youtube-report-page .text-muted-foreground {
-    color: #5d5148 !important;
+    color: #566274 !important;
   }
 
-  .youtube-report-page .text-primary,
-  .youtube-report-page .text-red-600,
-  .youtube-report-page .dark\:text-red-400 {
+  .youtube-report-page .text-primary {
     color: hsl(var(--primary)) !important;
   }
 
-  .youtube-report-page .bg-secondary,
-  .youtube-report-page .bg-red-500\/10 {
+  .youtube-report-page .bg-secondary {
     background-color: hsl(var(--secondary)) !important;
   }
 
@@ -298,7 +295,7 @@
   }
 
   .youtube-report-page a {
-    color: #1f1a17 !important;
+    color: #0b1736 !important;
     text-decoration: none !important;
   }
 }

@@ -4,7 +4,7 @@ import { Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 
-import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme();
@@ -15,20 +15,34 @@ export function ThemeToggle() {
   }, []);
 
   if (!mounted) {
-    return <Button variant="ghost" size="sm" className="h-9 w-9 rounded-2xl" disabled />;
+    return <div className="h-10 w-[4.75rem] rounded-md border bg-secondary/60" aria-hidden="true" />;
   }
 
   const isDark = theme === "dark";
 
   return (
-    <Button
-      variant="ghost"
-      size="sm"
-      className="h-9 w-9 rounded-2xl"
+    <button
+      className="inline-grid h-10 w-[4.75rem] grid-cols-2 items-center rounded-md border bg-secondary/70 p-1 text-muted-foreground shadow-sm transition hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
       onClick={() => setTheme(isDark ? "light" : "dark")}
       aria-label="Toggle theme"
+      type="button"
     >
-      {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
-    </Button>
+      <span
+        className={cn(
+          "flex h-8 items-center justify-center rounded-sm transition",
+          !isDark && "bg-card text-primary shadow-sm"
+        )}
+      >
+        <Sun className="size-4" />
+      </span>
+      <span
+        className={cn(
+          "flex h-8 items-center justify-center rounded-sm transition",
+          isDark && "bg-card text-primary shadow-sm"
+        )}
+      >
+        <Moon className="size-4" />
+      </span>
+    </button>
   );
 }

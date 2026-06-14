@@ -210,6 +210,7 @@ type CountryMetricRow = {
 const VALID_CONTENT_TYPES: ContentTypeFilter[] = ["all", "short", "long", "live", "unknown"];
 const VALID_COHORTS: VideoCohort[] = ["all", "recent", "old"];
 const SUPABASE_PAGE_SIZE = 1000;
+const VIDEO_TABLE_RESULT_LIMIT = 100;
 const DEFAULT_YOUTUBE_CHANNEL_ID = "UCXjhJbviBl0M4JAC3cxDXqA";
 
 export function normalizeYoutubePerformanceFilters(input: {
@@ -397,13 +398,13 @@ export async function getYoutubePerformanceDashboard(
       longShortSplit,
       countryRevenueBreakdown: buildCountryRevenueBreakdown(currentCountryRows).slice(0, 10),
       cohortSummary,
-      topRevenueVideos: sortByMetric(currentVideos.filteredRows, "estimatedRevenue").slice(0, 10),
-      topViewedVideos: sortByMetric(currentVideos.filteredRows, "views").slice(0, 10),
+      topRevenueVideos: sortByMetric(currentVideos.filteredRows, "estimatedRevenue").slice(0, VIDEO_TABLE_RESULT_LIMIT),
+      topViewedVideos: sortByMetric(currentVideos.filteredRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
       leastViewedRecentVideos: [...twoMonthRecentRowsWithViews]
         .sort((left, right) => left.views - right.views)
-        .slice(0, 10),
-      oldVideoLeaders: sortByMetric(oldRows, "views").slice(0, 10),
-      recentVideoLeaders: sortByMetric(twoMonthRecentRows, "views").slice(0, 10),
+        .slice(0, VIDEO_TABLE_RESULT_LIMIT),
+      oldVideoLeaders: sortByMetric(oldRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
+      recentVideoLeaders: sortByMetric(twoMonthRecentRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
       videoMetricsAvailable,
       hasSelectedMonthData,
       hasPreviousMonthData,
@@ -555,10 +556,16 @@ export async function getYoutubeComparisonDashboard(
         revenue: buildComparisonDelta(primaryTotals.estimatedRevenue, comparisonTotals.estimatedRevenue)
       },
       contentTypeComparison: buildContentTypeComparison(primaryContentTypeRows, comparisonContentTypeRows, filters),
-      topViewedRangeOneVideos: sortByMetric(primaryVideos.filteredRows, "views").slice(0, 10),
-      topViewedRangeTwoVideos: sortByMetric(comparisonVideos.filteredRows, "views").slice(0, 10),
-      topRevenueRangeOneVideos: sortByMetric(primaryVideos.filteredRows, "estimatedRevenue").slice(0, 10),
-      topRevenueRangeTwoVideos: sortByMetric(comparisonVideos.filteredRows, "estimatedRevenue").slice(0, 10),
+      topViewedRangeOneVideos: sortByMetric(primaryVideos.filteredRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
+      topViewedRangeTwoVideos: sortByMetric(comparisonVideos.filteredRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
+      topRevenueRangeOneVideos: sortByMetric(primaryVideos.filteredRows, "estimatedRevenue").slice(
+        0,
+        VIDEO_TABLE_RESULT_LIMIT
+      ),
+      topRevenueRangeTwoVideos: sortByMetric(comparisonVideos.filteredRows, "estimatedRevenue").slice(
+        0,
+        VIDEO_TABLE_RESULT_LIMIT
+      ),
       latestSync
     };
   } catch (error) {

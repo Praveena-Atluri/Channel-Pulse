@@ -7,8 +7,10 @@ import {
   fetchYouTubeVideos,
   getYouTubeCmsConfig,
   refreshYouTubeAccessToken,
+  withYouTubeContentOwner,
   type AnalyticsReportResult,
   type AnalyticsReportRow,
+  type YouTubeChannelMetadata,
   type YouTubeVideoMetadata,
 } from "@/lib/youtube-cms-api";
 import {
@@ -132,13 +134,15 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
     const config = getYouTubeCmsConfig();
     const accessToken = await refreshYouTubeAccessToken(config);
     const warnings: string[] = [];
-    const allChannelMetadata = await fetchManagedYouTubeChannels(accessToken, config.contentOwnerId);
-    const channelMetadata =
-      input.channelId && input.channelId !== "all"
-        ? allChannelMetadata.filter((channel) => channel.channelId === input.channelId)
-        : allChannelMetadata;
+    const channelCatalogs = await fetchManagedChannelsByContentOwner(accessToken, config.contentOwnerIds);
+    const allChannelMetadata = uniqueChannels(channelCatalogs.flatMap((catalog) => catalog.channels));
+    const selectedCatalog = channelCatalogs.find((catalog) =>
+      catalog.channels.some((channel) => channel.channelId === input.channelId)
+    );
+    const channelMetadata = selectedCatalog?.channels.filter((channel) => channel.channelId === input.channelId) ?? [];
     const channelIds = channelMetadata.map((channel) => channel.channelId);
-    const channelMetrics: DailyMetricAccumulator[] = [];
+    const selectedConfig = selectedCatalog ? withYouTubeContentOwner(config, selectedCatalog.contentOwnerId) : config;
+    let channelMetrics: DailyMetricAccumulator[] = [];
     const contentTypeMetrics: DailyMetricAccumulator[] = [];
     const countryMetrics: DailyMetricAccumulator[] = [];
     const videoMetrics: DailyMetricAccumulator[] = [];
@@ -154,7 +158,7 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
       fetchChannelReports({
         accessToken,
         channelId,
-        config,
+        config: selectedConfig,
         endDate: input.endDate,
         startDate: input.startDate,
         warnings
@@ -170,6 +174,14 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
         videoMetadataById.set(video.videoId, video);
       }
     }
+
+    if (channelMetrics.length === 0) {
+      const detail = warnings.length > 0 ? ` ${warnings.join("\n")}` : "";
+      throw new Error(
+        `YouTube did not return channel metrics for ${input.channelId} from ${input.startDate} to ${input.endDate}.${detail}`
+      );
+    }
+    channelMetrics = fillMissingChannelMetricDays(channelMetrics, channelIds, input.startDate, input.endDate);
 
     const videoIds = unique(videoMetrics.map((row) => row.videoId).filter(Boolean) as string[]);
     const missingMetadataIds = videoIds.filter((videoId) => !videoMetadataById.has(videoId));
@@ -217,7 +229,8 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
         metrics_rows_synced: metricsRowsSynced,
         metadata: {
           warnings,
-          channelCount: channelIds.length
+          channelCount: channelIds.length,
+          channelIds
         }
       })
       .eq("id", syncRun.id);
@@ -240,13 +253,34 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
         .update({
           status: "failed",
           finished_at: new Date().toISOString(),
-          error_message: message
+          error_message: message,
+          metadata: {
+            channelId: input.channelId
+          }
         })
         .eq("id", syncRun.id);
     }
 
     throw error;
   }
+}
+
+async function fetchManagedChannelsByContentOwner(accessToken: string, contentOwnerIds: string[]) {
+  return Promise.all(
+    contentOwnerIds.map(async (contentOwnerId) => ({
+      contentOwnerId,
+      channels: await fetchManagedYouTubeChannels(accessToken, contentOwnerId)
+    }))
+  );
+}
+
+function uniqueChannels(channels: YouTubeChannelMetadata[]) {
+  const channelsById = new Map<string, YouTubeChannelMetadata>();
+  for (const channel of channels) {
+    channelsById.set(channel.channelId, channel);
+  }
+
+  return Array.from(channelsById.values());
 }
 
 function mergeReports(dimensions: string[], ...reports: AnalyticsReportResult[]) {
@@ -352,6 +386,33 @@ async function fetchOptionalReport(
 
 function withChannelId(rows: DailyMetricAccumulator[], channelId: string) {
   return rows.map((row) => ({ ...row, channelId }));
+}
+
+function fillMissingChannelMetricDays(
+  metrics: DailyMetricAccumulator[],
+  channelIds: string[],
+  startDate: string,
+  endDate: string
+) {
+  const rowsByKey = new Map(metrics.map((row) => [`${row.channelId}|${row.day}`, row]));
+
+  for (const channelId of channelIds) {
+    for (const day of getInclusiveDateKeys(startDate, endDate)) {
+      const key = `${channelId}|${day}`;
+      if (!rowsByKey.has(key)) {
+        rowsByKey.set(key, {
+          day,
+          channelId,
+          views: 0,
+          estimatedMinutesWatched: 0,
+          subscribersGained: 0,
+          subscribersLost: 0
+        });
+      }
+    }
+  }
+
+  return Array.from(rowsByKey.values());
 }
 
 async function fetchChannelReports(input: {
@@ -582,23 +643,32 @@ async function upsertChannelMetrics(
   supabase: ReturnType<typeof createSupabaseAdminClient>,
   metrics: DailyMetricAccumulator[]
 ) {
-  const rows = metrics.map((row) => ({
+  const updatedAt = new Date().toISOString();
+  const coreRows = metrics.map((row) => ({
     day: row.day,
     channel_id: row.channelId,
     views: row.views ?? 0,
     estimated_minutes_watched: row.estimatedMinutesWatched ?? 0,
     subscribers_gained: row.subscribersGained ?? 0,
     subscribers_lost: row.subscribersLost ?? 0,
-    estimated_revenue: row.estimatedRevenue ?? 0,
-    estimated_ad_revenue: row.estimatedAdRevenue ?? 0,
-    gross_revenue: row.grossRevenue ?? 0,
-    monetized_playbacks: row.monetizedPlaybacks ?? 0,
-    ad_impressions: row.adImpressions ?? 0,
-    playback_based_cpm: row.playbackBasedCpm ?? 0,
-    updated_at: new Date().toISOString()
+    updated_at: updatedAt
   }));
+  const revenueRows = metrics
+    .filter(hasRevenueMetric)
+    .map((row) => ({
+      day: row.day,
+      channel_id: row.channelId,
+      estimated_revenue: row.estimatedRevenue ?? 0,
+      estimated_ad_revenue: row.estimatedAdRevenue ?? 0,
+      gross_revenue: row.grossRevenue ?? 0,
+      monetized_playbacks: row.monetizedPlaybacks ?? 0,
+      ad_impressions: row.adImpressions ?? 0,
+      playback_based_cpm: row.playbackBasedCpm ?? 0,
+      updated_at: updatedAt
+    }));
 
-  await upsertInChunks(supabase, "youtube_channel_daily_metrics", rows, "day,channel_id");
+  await upsertInChunks(supabase, "youtube_channel_daily_metrics", coreRows, "day,channel_id");
+  await upsertInChunks(supabase, "youtube_channel_daily_metrics", revenueRows, "day,channel_id");
 }
 
 async function upsertVideoMetrics(
@@ -623,6 +693,17 @@ async function upsertVideoMetrics(
     }));
 
   await upsertInChunks(supabase, "youtube_video_daily_metrics", rows, "day,video_id");
+}
+
+function hasRevenueMetric(row: DailyMetricAccumulator) {
+  return (
+    row.estimatedRevenue !== undefined ||
+    row.estimatedAdRevenue !== undefined ||
+    row.grossRevenue !== undefined ||
+    row.monetizedPlaybacks !== undefined ||
+    row.adImpressions !== undefined ||
+    row.playbackBasedCpm !== undefined
+  );
 }
 
 async function upsertVideoCatalog(
@@ -728,6 +809,32 @@ function readNumber(row: AnalyticsReportRow, key: string) {
 function normalizeCountryCode(value: unknown) {
   const code = String(value ?? "").trim().toUpperCase();
   return /^[A-Z]{2}$/.test(code) ? code : "ZZ";
+}
+
+function getInclusiveDateKeys(startDate: string, endDate: string) {
+  const start = parseDateKey(startDate);
+  const end = parseDateKey(endDate);
+  if (!start || !end || start.getTime() > end.getTime()) {
+    return [];
+  }
+
+  const days: string[] = [];
+  const cursor = new Date(start);
+  while (cursor.getTime() <= end.getTime()) {
+    days.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return days;
+}
+
+function parseDateKey(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 function getErrorMessage(error: unknown) {

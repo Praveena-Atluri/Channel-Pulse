@@ -15,6 +15,7 @@ export type YouTubeCmsConfig = {
   clientSecret: string;
   refreshToken: string;
   contentOwnerId: string;
+  contentOwnerIds: string[];
   analyticsFilters: string;
 };
 
@@ -68,13 +69,13 @@ export function getYouTubeCmsConfig(): YouTubeCmsConfig {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
   const refreshToken = process.env.YOUTUBE_OAUTH_REFRESH_TOKEN;
-  const contentOwnerId = process.env.YOUTUBE_CONTENT_OWNER_ID;
+  const contentOwnerIds = parseContentOwnerIds(process.env.YOUTUBE_CONTENT_OWNER_ID);
 
   const missing = [
     ["GOOGLE_CLIENT_ID", clientId],
     ["GOOGLE_CLIENT_SECRET", clientSecret],
     ["YOUTUBE_OAUTH_REFRESH_TOKEN", refreshToken],
-    ["YOUTUBE_CONTENT_OWNER_ID", contentOwnerId]
+    ["YOUTUBE_CONTENT_OWNER_ID", contentOwnerIds.length > 0 ? contentOwnerIds.join(",") : ""]
   ]
     .filter(([, value]) => !value)
     .map(([name]) => name);
@@ -87,18 +88,23 @@ export function getYouTubeCmsConfig(): YouTubeCmsConfig {
     clientId: clientId as string,
     clientSecret: clientSecret as string,
     refreshToken: refreshToken as string,
-    contentOwnerId: contentOwnerId as string,
+    contentOwnerId: contentOwnerIds[0],
+    contentOwnerIds,
     analyticsFilters: process.env.YOUTUBE_ANALYTICS_FILTERS ?? "claimedStatus==claimed"
   };
 }
 
 export function isYouTubeCmsConfigured() {
   return Boolean(
-    process.env.GOOGLE_CLIENT_ID &&
+      process.env.GOOGLE_CLIENT_ID &&
       process.env.GOOGLE_CLIENT_SECRET &&
       process.env.YOUTUBE_OAUTH_REFRESH_TOKEN &&
-      process.env.YOUTUBE_CONTENT_OWNER_ID
+      parseContentOwnerIds(process.env.YOUTUBE_CONTENT_OWNER_ID).length > 0
   );
+}
+
+export function withYouTubeContentOwner(config: YouTubeCmsConfig, contentOwnerId: string): YouTubeCmsConfig {
+  return { ...config, contentOwnerId };
 }
 
 export async function refreshYouTubeAccessToken(config = getYouTubeCmsConfig()) {
@@ -538,6 +544,17 @@ function parseOptionalNumber(value: string | undefined) {
   if (value === undefined) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseContentOwnerIds(value: string | undefined) {
+  return Array.from(
+    new Set(
+      (value ?? "")
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  );
 }
 
 function unique(values: string[]) {

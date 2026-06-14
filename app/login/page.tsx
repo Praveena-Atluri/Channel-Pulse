@@ -39,7 +39,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-5xl flex-col">
         <header className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-red-500/10 p-3 text-red-600 dark:text-red-400">
+            <div className="rounded-lg bg-primary/10 p-3 text-primary">
               <RadioTower className="size-6" />
             </div>
             <div>

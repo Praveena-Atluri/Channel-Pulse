@@ -8,28 +8,26 @@ import {
   Eye,
   Film,
   Globe2,
-  LineChart,
-  PlaySquare,
-  TrendingDown,
   TrendingUp,
-  Users,
-  Youtube
+  Users
 } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 
+import { AppLogo } from "@/components/app-logo";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { LogoutButton } from "@/components/logout-button";
 import { YoutubeAutoSubmitForm } from "@/components/youtube-auto-submit-form";
 import { YoutubeChannelSelect } from "@/components/youtube-channel-select";
 import { YoutubeFilterLoadingBoundary } from "@/components/youtube-filter-loading-boundary";
 import { YoutubePdfDownloadButton } from "@/components/youtube-pdf-download-button";
-import { YoutubeSyncActions } from "@/components/youtube-sync-actions";
+import { YoutubeVideoTable } from "@/components/youtube-video-table";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { canAccountViewRevenue, getAccountChannelAccess, isAuthConfigured } from "@/lib/auth";
 import { requireCurrentAccount } from "@/lib/server-auth";
+import { ensureYoutubeAnalyticsRangeData, getIncompleteYoutubeAnalyticsChannelIds } from "@/lib/youtube-auto-sync";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import {
   getYoutubePerformanceDashboard,
@@ -41,8 +39,7 @@ import {
 import {
   calculateNetSubscribers,
   getMonthDateRange,
-  type MetricTotals,
-  type VideoCohort
+  type MetricTotals
 } from "@/lib/youtube-performance-utils";
 
 export const dynamic = "force-dynamic";
@@ -52,7 +49,6 @@ type YoutubePerformancePageProps = {
     month?: string;
     channel?: string;
     contentType?: string;
-    cohort?: string;
   }>;
 };
 
@@ -60,29 +56,73 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
   const params = await searchParams;
   const account = await requireCurrentAccount("/monthly");
   const canViewRevenue = canAccountViewRevenue(account);
-  const filters = normalizeYoutubePerformanceFilters(params);
-  const dashboard = await getYoutubePerformanceDashboard(filters, getAccountChannelAccess(account));
-  const netSubscribers = calculateNetSubscribers(dashboard.channelSubscriberTotals);
-  const selectedMonthRange = getMonthDateRange(dashboard.selectedMonth);
-  const selectedChannel = dashboard.channels.find((channel) => channel.channelId === dashboard.filters.channelId);
+  const filters = normalizeYoutubePerformanceFilters({
+    month: params.month,
+    channel: params.channel,
+    contentType: params.contentType
+  });
+  let dashboard = await getYoutubePerformanceDashboard(filters, getAccountChannelAccess(account));
   const cmsConfigured = isYouTubeCmsConfigured();
-  const hasSelectedChannel = dashboard.channels.some((channel) => channel.channelId === dashboard.filters.channelId);
+  const selectedMonthRange = getMonthDateRange(dashboard.selectedMonth);
+  const previousMonthRange = getMonthDateRange(dashboard.previousMonth);
+  let autoSyncError = "";
+
+  if (dashboard.schemaReady && cmsConfigured) {
+    const channelsToSync = getDashboardSyncChannels(dashboard.filters.channelId, dashboard.channels);
+    try {
+      await Promise.all([
+        ensureYoutubeAnalyticsRangeData({
+          channels: channelsToSync,
+          endDate: selectedMonthRange.analyticsEndDate,
+          startDate: selectedMonthRange.startDate
+        }),
+        ensureYoutubeAnalyticsRangeData({
+          channels: channelsToSync,
+          endDate: previousMonthRange.analyticsEndDate,
+          startDate: previousMonthRange.startDate
+        })
+      ]);
+      dashboard = await getYoutubePerformanceDashboard(filters, getAccountChannelAccess(account));
+    } catch (error) {
+      const isCompleteAfterSync = await hasCompleteMonthlyDataAfterSync({
+        channels: channelsToSync,
+        previousEndDate: previousMonthRange.analyticsEndDate,
+        previousStartDate: previousMonthRange.startDate,
+        selectedEndDate: selectedMonthRange.analyticsEndDate,
+        selectedStartDate: selectedMonthRange.startDate
+      });
+
+      if (isCompleteAfterSync) {
+        dashboard = await getYoutubePerformanceDashboard(filters, getAccountChannelAccess(account));
+      } else {
+        autoSyncError = getErrorMessage(error);
+      }
+    }
+  }
+
+  const netSubscribers = calculateNetSubscribers(dashboard.channelSubscriberTotals);
+  const selectedChannel = dashboard.channels.find((channel) => channel.channelId === dashboard.filters.channelId);
   const canEvaluateDataCoverage = dashboard.schemaReady && cmsConfigured;
   const hasComparisonData = canEvaluateDataCoverage && dashboard.hasSelectedMonthData && dashboard.hasPreviousMonthData;
+  const canShowComparisonData = hasComparisonData && !autoSyncError;
   const videoMetricsMessage =
     "Video-level performance is unavailable for this CMS API connection, so channel-level and format-level metrics are shown above.";
-  const missingDataMessage = `Click Sync ${formatMonthLabel(
-    dashboard.selectedMonth
-  )} to load this dashboard. The previous month is included automatically for comparison.`;
+  const dashboardRenderKey = [
+    dashboard.selectedMonth,
+    dashboard.previousMonth,
+    dashboard.filters.channelId,
+    dashboard.filters.contentType,
+    canShowComparisonData ? "loaded" : "empty",
+    autoSyncError,
+    Date.now()
+  ].join("|");
 
   return (
     <main className="youtube-report-page min-h-screen p-4 md:p-6">
       <div className="youtube-report-shell mx-auto flex max-w-7xl flex-col gap-4">
         <header className="youtube-report-header flex flex-col gap-4 rounded-lg border bg-card/95 p-4 shadow-sm md:flex-row md:items-center md:justify-between">
           <div className="flex items-center gap-3">
-            <div className="rounded-lg bg-red-500/10 p-3 text-red-600 dark:text-red-400">
-              <Youtube className="size-7" />
-            </div>
+            <AppLogo />
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-2xl font-black">Channel Pulse</h1>
@@ -92,18 +132,18 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
               </div>
               <p className="text-sm text-muted-foreground">
                 {canViewRevenue
-                  ? "Monthly management view for views, subscribers, revenue, and video cohorts."
-                  : "Monthly management view for views, watch time, subscribers, and video cohorts."}
+                  ? "Monthly management view for views, subscribers, revenue, and video performance."
+                  : "Monthly management view for views, watch time, subscribers, and video performance."}
               </p>
               <p className="mt-1 text-xs font-semibold text-muted-foreground">
                 {selectedChannel?.title ?? "Selected channel"} | {formatMonthLabel(dashboard.selectedMonth)} |{" "}
-                {contentTypeLabel(dashboard.filters.contentType)} | {cohortLabel(dashboard.filters.cohort)}
+                {contentTypeLabel(dashboard.filters.contentType)}
               </p>
             </div>
           </div>
 
           <div className="youtube-print-hidden flex items-center gap-2">
-            {hasComparisonData ? (
+            {canShowComparisonData ? (
               <YoutubePdfDownloadButton
                 filename={`youtube-monthly-${dashboard.selectedMonth}-${slugify(selectedChannel?.title ?? "channel")}`}
               />
@@ -126,7 +166,7 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
         {!cmsConfigured ? (
           <StatusPanel
             title="YouTube CMS OAuth is not configured"
-            message="Add GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, YOUTUBE_OAUTH_REFRESH_TOKEN, and YOUTUBE_CONTENT_OWNER_ID before running the sync."
+            message="Add GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, YOUTUBE_OAUTH_REFRESH_TOKEN, and one or more comma-separated YOUTUBE_CONTENT_OWNER_ID values before running the sync."
           />
         ) : null}
 
@@ -138,7 +178,7 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
         ) : null}
 
         <section className="youtube-print-hidden rounded-lg border bg-card/95 p-4 shadow-sm">
-          <YoutubeAutoSubmitForm action="/monthly" className="grid gap-3 md:grid-cols-4">
+          <YoutubeAutoSubmitForm action="/monthly" className="grid gap-3 md:grid-cols-3">
             <FilterSelect label="Month" name="month" value={dashboard.selectedMonth}>
               {dashboard.availableMonths.map((month) => (
                 <option key={month} value={month}>
@@ -162,191 +202,181 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
               <option value="live">Live</option>
               <option value="unknown">Unknown</option>
             </FilterSelect>
-
-            <FilterSelect label="Cohort" name="cohort" value={dashboard.filters.cohort}>
-              <option value="all">All videos</option>
-              <option value="recent">Selected and previous month</option>
-              <option value="old">Older videos</option>
-            </FilterSelect>
           </YoutubeAutoSubmitForm>
         </section>
 
-        <YoutubeFilterLoadingBoundary>
-          {canEvaluateDataCoverage && !hasComparisonData ? (
+        <YoutubeFilterLoadingBoundary
+          renderKey={dashboardRenderKey}
+        >
+          {canEvaluateDataCoverage && (!canShowComparisonData || autoSyncError) ? (
+            <StatusPanel
+              title="Data is unavailable"
+              message={
+                autoSyncError ||
+                "Channel Pulse could not load data for the selected range. The YouTube CMS did not return data for this channel and date range."
+              }
+            />
+          ) : null}
+
+          {canShowComparisonData ? (
             <>
-              <StatusPanel title="Sync this month" message={missingDataMessage} />
-              <section className="youtube-print-hidden">
-                <SyncPanel
-                  channelId={dashboard.filters.channelId}
-                  startDate={selectedMonthRange.startDate}
-                  endDate={selectedMonthRange.analyticsEndDate}
-                  monthLabel={formatMonthLabel(dashboard.selectedMonth)}
-                  channelTitle={selectedChannel?.title ?? "this channel"}
-                  disabled={!dashboard.schemaReady || !cmsConfigured || !hasSelectedChannel}
+              <section className="youtube-report-kpi-grid grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+                <MetricCard
+                  title="Views"
+                  value={formatCompactNumber(dashboard.currentTotals.views)}
+                  detail={`${formatSignedPercent(dashboard.growth.views)} vs ${formatMonthLabel(dashboard.previousMonth)}`}
+                  icon={Eye}
+                  trend={dashboard.growth.views}
+                />
+                <MetricCard
+                  title="Watch Time"
+                  value={`${formatCompactNumber(dashboard.currentTotals.estimatedMinutesWatched / 60)} hrs`}
+                  detail="Estimated hours watched"
+                  icon={Clock3}
+                />
+                <MetricCard
+                  title="Subscribers"
+                  value={formatSignedNumber(netSubscribers)}
+                  detail={`${formatSignedPercent(dashboard.growth.netSubscribers)} net growth`}
+                  icon={Users}
+                  trend={dashboard.growth.netSubscribers}
+                />
+                {canViewRevenue ? (
+                  <MetricCard
+                    title="Estimated Revenue"
+                    value={formatCurrency(dashboard.currentTotals.estimatedRevenue)}
+                    detail={`${formatSignedPercent(dashboard.growth.revenue)} vs ${formatMonthLabel(dashboard.previousMonth)}`}
+                    icon={DollarSign}
+                    trend={dashboard.growth.revenue}
+                  />
+                ) : (
+                  <LongShortViewsCard rows={dashboard.longShortSplit} compact />
+                )}
+              </section>
+
+              {canViewRevenue ? (
+                <section className="youtube-report-two-col grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
+                  <Card className="shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="flex items-center gap-2 text-base">
+                        <BarChart3 className="size-4 text-primary" />
+                        Revenue Split
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                      <MiniMetric label="Estimated revenue" value={formatCurrency(dashboard.currentTotals.estimatedRevenue)} />
+                      <MiniMetric label="Estimated ad revenue" value={formatCurrency(dashboard.currentTotals.estimatedAdRevenue)} />
+                      <MiniMetric label="Gross revenue" value={formatCurrency(dashboard.currentTotals.grossRevenue)} />
+                      <MiniMetric label="Monetized playbacks" value={formatCompactNumber(dashboard.currentTotals.monetizedPlaybacks)} />
+                      <MiniMetric label="Ad impressions" value={formatCompactNumber(dashboard.currentTotals.adImpressions)} />
+                      <MiniMetric label="Playback CPM" value={formatCurrency(calculatePlaybackCpm(dashboard.currentTotals))} />
+                    </CardContent>
+                  </Card>
+
+                  <LongShortViewsCard rows={dashboard.longShortSplit} />
+                </section>
+              ) : null}
+
+              {canViewRevenue ? (
+                <section>
+                  <CountryRevenueCard
+                    rows={dashboard.countryRevenueBreakdown}
+                    totalRevenue={dashboard.currentTotals.estimatedRevenue}
+                  />
+                </section>
+              ) : null}
+
+              <section className="youtube-report-two-col grid gap-4 md:grid-cols-2">
+                <CohortCard
+                  title="Old Videos Performance"
+                  totals={dashboard.cohortSummary.old}
+                  icon={TrendingUp}
+                  canViewRevenue={canViewRevenue}
+                  unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                />
+                <CohortCard
+                  title="Last Two Months Videos"
+                  totals={dashboard.cohortSummary.recent}
+                  icon={CalendarDays}
+                  canViewRevenue={canViewRevenue}
+                  unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
                 />
               </section>
-            </>
-          ) : null}
 
-          {hasComparisonData ? (
-            <>
-        <section className="youtube-report-kpi-grid grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            title="Views"
-            value={formatCompactNumber(dashboard.currentTotals.views)}
-            detail={`${formatSignedPercent(dashboard.growth.views)} vs ${formatMonthLabel(dashboard.previousMonth)}`}
-            icon={Eye}
-            trend={dashboard.growth.views}
-          />
-          <MetricCard
-            title="Watch Time"
-            value={`${formatCompactNumber(dashboard.currentTotals.estimatedMinutesWatched / 60)} hrs`}
-            detail="Estimated hours watched"
-            icon={Clock3}
-          />
-          <MetricCard
-            title="Subscribers"
-            value={formatSignedNumber(netSubscribers)}
-            detail={`${formatSignedPercent(dashboard.growth.netSubscribers)} net growth`}
-            icon={Users}
-            trend={dashboard.growth.netSubscribers}
-          />
-          {canViewRevenue ? (
-            <MetricCard
-              title="Estimated Revenue"
-              value={formatCurrency(dashboard.currentTotals.estimatedRevenue)}
-              detail={`${formatSignedPercent(dashboard.growth.revenue)} vs ${formatMonthLabel(dashboard.previousMonth)}`}
-              icon={DollarSign}
-              trend={dashboard.growth.revenue}
-            />
-          ) : null}
-        </section>
+              {canViewRevenue ? (
+                <>
+                  <section className="youtube-report-three-col grid gap-4 xl:grid-cols-3">
+                    <VideoTable
+                      title="Old Video Leaders"
+                      rows={toVideoTableRows(dashboard.oldVideoLeaders, "views", { showCohort: true })}
+                      metric="views"
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                    <VideoTable
+                      title="Least Viewed Recent Videos"
+                      rows={toVideoTableRows(dashboard.leastViewedRecentVideos, "views", { showCohort: true })}
+                      metric="views"
+                      ascending
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                    <VideoTable
+                      title="Last Two Months Leaders"
+                      rows={toVideoTableRows(dashboard.recentVideoLeaders, "views", { showCohort: true })}
+                      metric="views"
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                  </section>
 
-        <section className="youtube-report-two-col grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
-          {canViewRevenue ? (
-            <Card className="shadow-sm">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <BarChart3 className="size-4 text-primary" />
-                  Revenue Split
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <MiniMetric label="Estimated revenue" value={formatCurrency(dashboard.currentTotals.estimatedRevenue)} />
-                <MiniMetric label="Estimated ad revenue" value={formatCurrency(dashboard.currentTotals.estimatedAdRevenue)} />
-                <MiniMetric label="Gross revenue" value={formatCurrency(dashboard.currentTotals.grossRevenue)} />
-                <MiniMetric label="Monetized playbacks" value={formatCompactNumber(dashboard.currentTotals.monetizedPlaybacks)} />
-                <MiniMetric label="Ad impressions" value={formatCompactNumber(dashboard.currentTotals.adImpressions)} />
-                <MiniMetric label="Playback CPM" value={formatCurrency(calculatePlaybackCpm(dashboard.currentTotals))} />
-              </CardContent>
-            </Card>
-          ) : null}
-
-          <Card className="shadow-sm">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Film className="size-4 text-primary" />
-                Long vs Short Views
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {dashboard.longShortSplit.length > 0 ? (
-                dashboard.longShortSplit.map((item) => (
-                  <div key={item.contentType} className="space-y-1">
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-semibold capitalize">{contentTypeLabel(item.contentType)}</span>
-                      <span>{formatCompactNumber(item.views)} views</span>
-                    </div>
-                    <div className="h-2 overflow-hidden rounded-full bg-muted">
-                      <div
-                        className="h-full rounded-full bg-primary"
-                        style={{ width: `${getSplitWidth(item.views, dashboard.longShortSplit)}%` }}
-                      />
-                    </div>
-                  </div>
-                ))
+                  <section className="youtube-report-two-col grid gap-4 xl:grid-cols-2">
+                    <VideoTable
+                      title="Most Viewed Videos This Month"
+                      rows={toVideoTableRows(dashboard.topViewedVideos, "views", { showCohort: true })}
+                      metric="views"
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                    <VideoTable
+                      title="Most Revenue Generating Videos"
+                      rows={toVideoTableRows(dashboard.topRevenueVideos, "revenue", { showCohort: true })}
+                      metric="revenue"
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                  </section>
+                </>
               ) : (
-                <p className="text-sm text-muted-foreground">No format split is available for this filter.</p>
+                <>
+                  <section className="youtube-report-two-col grid gap-4 xl:grid-cols-2">
+                    <VideoTable
+                      title="Old Video Leaders"
+                      rows={toVideoTableRows(dashboard.oldVideoLeaders, "views", { showCohort: true })}
+                      metric="views"
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                    <VideoTable
+                      title="Last Two Months Leaders"
+                      rows={toVideoTableRows(dashboard.recentVideoLeaders, "views", { showCohort: true })}
+                      metric="views"
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                  </section>
+
+                  <section className="youtube-report-two-col grid gap-4 xl:grid-cols-2">
+                    <VideoTable
+                      title="Least Viewed Recent Videos"
+                      rows={toVideoTableRows(dashboard.leastViewedRecentVideos, "views", { showCohort: true })}
+                      metric="views"
+                      ascending
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                    <VideoTable
+                      title="Most Viewed Videos This Month"
+                      rows={toVideoTableRows(dashboard.topViewedVideos, "views", { showCohort: true })}
+                      metric="views"
+                      unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
+                    />
+                  </section>
+                </>
               )}
-            </CardContent>
-          </Card>
-        </section>
 
-        {canViewRevenue ? (
-          <section>
-            <CountryRevenueCard
-              rows={dashboard.countryRevenueBreakdown}
-              totalRevenue={dashboard.currentTotals.estimatedRevenue}
-            />
-          </section>
-        ) : null}
-
-        <section className="youtube-report-two-col grid gap-4 md:grid-cols-2">
-          <CohortCard
-            title="Old Videos Performance"
-            totals={dashboard.cohortSummary.old}
-            icon={TrendingUp}
-            canViewRevenue={canViewRevenue}
-            unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
-          />
-          <CohortCard
-            title="Last Two Months Videos"
-            totals={dashboard.cohortSummary.recent}
-            icon={CalendarDays}
-            canViewRevenue={canViewRevenue}
-            unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
-          />
-        </section>
-
-        <section className="youtube-report-three-col grid gap-4 xl:grid-cols-3">
-          <VideoTable
-            title="Old Video Leaders"
-            rows={dashboard.oldVideoLeaders}
-            metric="views"
-            unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
-          />
-          <VideoTable
-            title="Least Viewed Recent Videos"
-            rows={dashboard.leastViewedRecentVideos}
-            metric="views"
-            ascending
-            unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
-          />
-          <VideoTable
-            title="Last Two Months Leaders"
-            rows={dashboard.recentVideoLeaders}
-            metric="views"
-            unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
-          />
-        </section>
-
-        <section className="youtube-report-two-col grid gap-4 xl:grid-cols-2">
-          <VideoTable
-            title="Most Viewed Videos This Month"
-            rows={dashboard.topViewedVideos}
-            metric="views"
-            unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
-          />
-          {canViewRevenue ? (
-            <VideoTable
-              title="Most Revenue Generating Videos"
-              rows={dashboard.topRevenueVideos}
-              metric="revenue"
-              unavailableMessage={!dashboard.videoMetricsAvailable ? videoMetricsMessage : null}
-            />
-          ) : null}
-        </section>
-
-        <section className="youtube-print-hidden">
-          <SyncPanel
-            channelId={dashboard.filters.channelId}
-            startDate={selectedMonthRange.startDate}
-            endDate={selectedMonthRange.analyticsEndDate}
-            monthLabel={formatMonthLabel(dashboard.selectedMonth)}
-            channelTitle={selectedChannel?.title ?? "this channel"}
-            disabled={!dashboard.schemaReady || !cmsConfigured || !hasSelectedChannel}
-          />
-        </section>
             </>
           ) : null}
         </YoutubeFilterLoadingBoundary>
@@ -414,6 +444,60 @@ function MetricCard({
         <p className="mt-1 text-3xl font-black">{value}</p>
         <p className="mt-2 text-xs text-muted-foreground">{detail}</p>
       </CardContent>
+    </Card>
+  );
+}
+
+function LongShortViewsCard({
+  rows,
+  compact = false
+}: {
+  rows: Array<{ contentType: ContentTypeFilter; views: number }>;
+  compact?: boolean;
+}) {
+  const body = (
+    <div className={compact ? "space-y-2.5" : "space-y-3"}>
+      {rows.length > 0 ? (
+        rows.map((item) => (
+          <div key={item.contentType} className="space-y-1">
+            <div className="flex items-center justify-between gap-3 text-sm">
+              <span className="min-w-0 font-semibold capitalize">{contentTypeLabel(item.contentType)}</span>
+              <span className="whitespace-nowrap tabular-nums">{formatCompactNumber(item.views)} views</span>
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-muted">
+              <div className="h-full rounded-full bg-primary" style={{ width: `${getSplitWidth(item.views, rows)}%` }} />
+            </div>
+          </div>
+        ))
+      ) : (
+        <p className="text-sm text-muted-foreground">No format split is available for this filter.</p>
+      )}
+    </div>
+  );
+
+  if (compact) {
+    return (
+      <Card className="h-full shadow-sm">
+        <CardContent className="p-5">
+          <div className="mb-4 flex items-center gap-2 text-base font-black">
+            <Film className="size-4 text-primary" />
+            Views breakdown
+          </div>
+          {body}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="shadow-sm">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Film className="size-4 text-primary" />
+          Views breakdown
+        </CardTitle>
+      </CardHeader>
+      <CardContent>{body}</CardContent>
     </Card>
   );
 }
@@ -508,7 +592,7 @@ function CountryRevenueCard({ rows, totalRevenue }: { rows: CountryRevenueRow[];
           </div>
         ) : (
           <p className="rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground">
-            No country revenue data found for this month. Sync this month again to populate the country breakup.
+            No country revenue data found for this month. Channel Pulse will load it automatically when the CMS returns country data for this range.
           </p>
         )}
       </CardContent>
@@ -516,114 +600,8 @@ function CountryRevenueCard({ rows, totalRevenue }: { rows: CountryRevenueRow[];
   );
 }
 
-function VideoTable({
-  title,
-  rows,
-  metric,
-  ascending = false,
-  unavailableMessage
-}: {
-  title: string;
-  rows: VideoPerformanceRow[];
-  metric: "views" | "revenue";
-  ascending?: boolean;
-  unavailableMessage?: string | null;
-}) {
-  const Icon = ascending ? TrendingDown : LineChart;
-
-  return (
-    <Card className="youtube-video-table shadow-sm">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Icon className="size-4 text-primary" />
-          {title}
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="youtube-video-table-content space-y-3">
-        {unavailableMessage ? (
-          <p className="rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground">{unavailableMessage}</p>
-        ) : rows.length > 0 ? (
-          rows.map((row, index) => (
-            <div
-              key={row.videoId}
-              className="youtube-video-row grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-lg border bg-background/70 p-3"
-            >
-              <div className="youtube-video-rank flex size-8 items-center justify-center rounded-md bg-secondary text-xs font-black">
-                {index + 1}
-              </div>
-              <div className="min-w-0">
-                <a
-                  href={getVideoUrl(row.videoId)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="youtube-video-title block truncate text-sm font-bold hover:text-primary"
-                >
-                  {row.title}
-                </a>
-                <div className="youtube-video-meta mt-1 flex flex-wrap gap-2 text-xs text-muted-foreground">
-                  <span>{row.channelTitle}</span>
-                  <span>{contentTypeLabel(row.contentType)}</span>
-                  <span>{row.cohort}</span>
-                </div>
-              </div>
-              <div className="text-right">
-                <p className="youtube-video-value text-sm font-black">
-                  {metric === "revenue" ? formatCurrency(row.estimatedRevenue) : formatCompactNumber(row.views)}
-                </p>
-                <p className="youtube-video-subvalue text-xs text-muted-foreground">
-                  {formatCompactNumber(row.estimatedMinutesWatched / 60)} hrs
-                </p>
-              </div>
-            </div>
-          ))
-        ) : (
-          <p className="rounded-lg border bg-background/70 p-4 text-sm text-muted-foreground">
-            No videos found for this filter.
-          </p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-function SyncPanel({
-  channelId,
-  startDate,
-  endDate,
-  monthLabel,
-  channelTitle,
-  disabled
-}: {
-  channelId: string;
-  startDate: string;
-  endDate: string;
-  monthLabel: string;
-  channelTitle: string;
-  disabled: boolean;
-}) {
-  return (
-    <Card className="shadow-sm">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <PlaySquare className="size-4 text-primary" />
-          Sync Data
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="rounded-lg border bg-background/70 p-3 text-sm text-muted-foreground">
-          Click the Sync button to sync {channelTitle}&apos;s {monthLabel} data. The previous month will be synced
-          automatically for comparison.
-        </p>
-        <YoutubeSyncActions
-          channelId={channelId}
-          startDate={startDate}
-          endDate={endDate}
-          monthLabel={monthLabel}
-          disabled={disabled}
-        />
-      </CardContent>
-    </Card>
-  );
+function VideoTable({ metric: _metric, ...props }: Parameters<typeof YoutubeVideoTable>[0] & { metric?: "views" | "revenue" }) {
+  return <YoutubeVideoTable {...props} />;
 }
 
 function StatusPanel({ title, message }: { title: string; message: string }) {
@@ -635,13 +613,53 @@ function StatusPanel({ title, message }: { title: string; message: string }) {
   );
 }
 
+function getDashboardSyncChannels(channelId: string, channels: Array<{ channelId: string }>) {
+  if (channelId === "all") return channels;
+  return channels.filter((channel) => channel.channelId === channelId);
+}
+
+async function hasCompleteMonthlyDataAfterSync({
+  channels,
+  selectedStartDate,
+  selectedEndDate,
+  previousStartDate,
+  previousEndDate
+}: {
+  channels: Array<{ channelId: string }>;
+  selectedStartDate: string;
+  selectedEndDate: string;
+  previousStartDate: string;
+  previousEndDate: string;
+}) {
+  try {
+    const [selectedMissingChannelIds, previousMissingChannelIds] = await Promise.all([
+      getIncompleteYoutubeAnalyticsChannelIds({
+        channels,
+        endDate: selectedEndDate,
+        startDate: selectedStartDate
+      }),
+      getIncompleteYoutubeAnalyticsChannelIds({
+        channels,
+        endDate: previousEndDate,
+        startDate: previousStartDate
+      })
+    ]);
+
+    return selectedMissingChannelIds.length === 0 && previousMissingChannelIds.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  return "Automatic data sync failed.";
+}
+
 function getSplitWidth(views: number, rows: Array<{ views: number }>) {
   const max = Math.max(...rows.map((row) => row.views), 1);
   return Math.max(4, Math.round((views / max) * 100));
-}
-
-function getVideoUrl(videoId: string) {
-  return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
 }
 
 function contentTypeLabel(value: ContentTypeFilter) {
@@ -650,12 +668,6 @@ function contentTypeLabel(value: ContentTypeFilter) {
   if (value === "live") return "Live";
   if (value === "unknown") return "Unknown";
   return "All formats";
-}
-
-function cohortLabel(value: VideoCohort) {
-  if (value === "recent") return "Selected and previous month";
-  if (value === "old") return "Older videos";
-  return "All videos";
 }
 
 function slugify(value: string) {
@@ -700,6 +712,20 @@ function formatMonthLabel(month: string) {
   return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric" }).format(
     new Date(Date.UTC(year, monthNumber - 1, 1))
   );
+}
+
+function toVideoTableRows(
+  rows: VideoPerformanceRow[],
+  metric: "views" | "revenue",
+  options: { showCohort?: boolean } = {}
+) {
+  return rows.map((row) => ({
+    videoId: row.videoId,
+    title: row.title,
+    value: metric === "revenue" ? formatCurrency(row.estimatedRevenue) : formatCompactNumber(row.views),
+    subvalue: `${formatCompactNumber(row.estimatedMinutesWatched / 60)} hrs`,
+    meta: [row.channelTitle, contentTypeLabel(row.contentType), ...(options.showCohort ? [row.cohort] : [])]
+  }));
 }
 
 function calculatePlaybackCpm(totals: MetricTotals) {

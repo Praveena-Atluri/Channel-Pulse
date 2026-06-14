@@ -11,6 +11,8 @@ type YoutubeSubmitButtonProps = {
   loadingLabel?: string;
 };
 
+const SUBMIT_TIMEOUT_MS = 120_000;
+
 export function YoutubeSubmitButton({ label = "Apply", loadingLabel = "Loading" }: YoutubeSubmitButtonProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -19,15 +21,20 @@ export function YoutubeSubmitButton({ label = "Apply", loadingLabel = "Loading" 
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-    setIsSubmitting(false);
-  }, [pathname, queryString]);
+    const handleApplyFinish = () => setIsSubmitting(false);
+    window.addEventListener("channel-pulse:apply-finish", handleApplyFinish);
+
+    return () => {
+      window.removeEventListener("channel-pulse:apply-finish", handleApplyFinish);
+    };
+  }, []);
 
   useEffect(() => {
     if (!isSubmitting) return undefined;
 
     const timeout = window.setTimeout(() => {
       setIsSubmitting(false);
-    }, 30000);
+    }, SUBMIT_TIMEOUT_MS);
 
     return () => window.clearTimeout(timeout);
   }, [isSubmitting]);
@@ -46,9 +53,9 @@ export function YoutubeSubmitButton({ label = "Apply", loadingLabel = "Loading" 
         const currentUrl = queryString ? `${pathname}?${queryString}` : pathname;
 
         setIsSubmitting(true);
+        window.dispatchEvent(new CustomEvent("channel-pulse:apply-start"));
         if (nextUrl === currentUrl) {
           router.refresh();
-          window.setTimeout(() => setIsSubmitting(false), 500);
           return;
         }
 

@@ -29,7 +29,7 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/", "/monthly/:path*", "/compare/:path*", "/api/youtube/:path*"]
+  matcher: ["/", "/monthly/:path*", "/compare/:path*", "/reports/:path*", "/api/youtube/:path*", "/api/reports/:path*"]
 };
 
 function getNextPath(request: NextRequest) {

@@ -3,6 +3,7 @@ import { Manrope, Noto_Sans_Telugu } from "next/font/google";
 
 import "./globals.css";
 import { cn } from "@/lib/utils";
+import { ProductionInteractionGuard } from "@/components/production-interaction-guard";
 import { ThemeProvider } from "@/components/theme-provider";
 
 const headingFont = Manrope({
@@ -17,7 +18,7 @@ const teluguFont = Noto_Sans_Telugu({
 
 export const metadata: Metadata = {
   title: "Channel Pulse",
-  description: "YouTube CMS performance dashboards for channels, subscribers, and video cohorts."
+  description: "YouTube CMS performance dashboards for channels, subscribers, and video performance."
 };
 
 export default function RootLayout({
@@ -34,7 +35,10 @@ export default function RootLayout({
           "min-h-screen font-[var(--font-heading)]"
         )}
       >
-        <ThemeProvider>{children}</ThemeProvider>
+        <ThemeProvider>
+          <ProductionInteractionGuard />
+          {children}
+        </ThemeProvider>
       </body>
     </html>
   );

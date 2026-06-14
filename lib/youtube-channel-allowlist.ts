@@ -12,7 +12,16 @@ export const FOCUSED_YOUTUBE_CHANNELS = [
   { title: "Tone Academy", channelId: "UCHtsA_T0_R9TW9oFI3I6qBA" },
   { title: "TeluguOne Food", channelId: "UCkld6KqjsC8mkfoP15sZCvw" },
   { title: "Tone Fashion", channelId: "UCv6uNOhfhOa9agcrcJppB2Q" },
-  { title: "Naveena Column", channelId: "UC55glYJiK5lhOKC_xnlkSnQ" }
+  { title: "Naveena Column", channelId: "UC55glYJiK5lhOKC_xnlkSnQ" },
+  { title: "KidsOne", channelId: "UCLWMXtD_61d2dpwkNUeVtgw" },
+  { title: "KidsOne Hindi", channelId: "UC2J1Ytfh69Tca-4-Ur1bjaw" },
+  { title: "KidsOne Telugu", channelId: "UCjCHw0Np-xswtfxQac2yiYA" },
+  { title: "KidsOne Odia", channelId: "UCKG1uiWSENKa_TtCsCb75ZA" },
+  { title: "KidsOne Tamil", channelId: "UCi7ahrGeHggv2izvah_CJ8g" },
+  { title: "KidsOne Kannada", channelId: "UCX2lCVMxlzVrewpqOW6WNwA" },
+  { title: "KidsOne Malayalam", channelId: "UCcUl07tKsYNEZn-5k491SLA" },
+  { title: "KidsOne Gujarati", channelId: "UClDXFRMmqAjzuyAdcUZGcgA" },
+  { title: "KidsOne Bhojpuri", channelId: "UCPAhQakmpFFbv9XgJW0rtjQ" }
 ] as const;
 
 const FOCUSED_CHANNELS_BY_ID = new Map<string, { title: string; channelId: string; index: number }>(

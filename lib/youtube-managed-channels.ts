@@ -55,9 +55,16 @@ export async function refreshYoutubeManagedChannelCatalog() {
   const supabase = createSupabaseAdminClient();
   const config = getYouTubeCmsConfig();
   const accessToken = await refreshYouTubeAccessToken(config);
-  const channels = await fetchManagedYouTubeChannels(accessToken, config.contentOwnerId);
+  const channelsById = new Map<string, YouTubeChannelMetadata>();
 
-  await upsertYoutubeManagedChannels(supabase, channels);
+  for (const contentOwnerId of config.contentOwnerIds) {
+    const channels = await fetchManagedYouTubeChannels(accessToken, contentOwnerId);
+    for (const channel of channels) {
+      channelsById.set(channel.channelId, channel);
+    }
+  }
+
+  await upsertYoutubeManagedChannels(supabase, Array.from(channelsById.values()));
 
   return listStoredYoutubeManagedChannels(supabase);
 }
