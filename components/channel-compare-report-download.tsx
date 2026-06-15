@@ -4,7 +4,7 @@ import { CheckSquare, Search, Square } from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 
-import { CsvDownloadButton } from "@/components/csv-download-button";
+import { ReportDownloadButton } from "@/components/report-download-button";
 import { buttonVariants } from "@/components/ui/button";
 import {
   CHANNEL_COMPARE_COLUMN_IDS,
@@ -127,7 +127,7 @@ export function ChannelCompareReportDownload({
         </SelectorPanel>
 
         <SelectorPanel
-          title="CSV Columns"
+          title="Report Columns"
           count={selectedColumnIds.length}
           total={CHANNEL_COMPARE_COLUMNS.length}
           onSelectAll={() => setSelectedColumnIds([...CHANNEL_COMPARE_COLUMN_IDS])}
@@ -168,16 +168,16 @@ export function ChannelCompareReportDownload({
             {selectedChannelIds.length} channels selected · {selectedColumnIds.length} columns selected
           </div>
           {selectedColumnIds.length === 0 ? (
-            <div className="text-xs font-semibold text-muted-foreground">Select at least one CSV column.</div>
+            <div className="text-xs font-semibold text-muted-foreground">Select at least one report column.</div>
           ) : null}
           {hasInvalidRange ? (
             <div className="text-xs font-semibold text-destructive">Each end date must be after its start date.</div>
           ) : null}
         </div>
-        <CsvDownloadButton
+        <ReportDownloadButton
           disabled={!canDownload}
           href={downloadHref}
-          idleLabel="Download Compare Summary CSV"
+          idleLabel="Download Compare Summary Excel"
           loadingLabel="Syncing data from YouTube..."
         />
       </div>

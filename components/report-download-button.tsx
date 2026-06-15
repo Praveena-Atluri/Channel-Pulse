@@ -5,19 +5,19 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
-type CsvDownloadButtonProps = {
+type ReportDownloadButtonProps = {
   disabled?: boolean;
   href: string;
   idleLabel: string;
   loadingLabel?: string;
 };
 
-export function CsvDownloadButton({
+export function ReportDownloadButton({
   disabled = false,
   href,
   idleLabel,
   loadingLabel = "Syncing data from YouTube..."
-}: CsvDownloadButtonProps) {
+}: ReportDownloadButtonProps) {
   const [isDownloading, setIsDownloading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -46,7 +46,7 @@ export function CsvDownloadButton({
             }
 
             const blob = await response.blob();
-            downloadBlob(blob, getDownloadFilename(response) ?? "channel-pulse-report.csv");
+            downloadBlob(blob, getDownloadFilename(response) ?? "channel-pulse-report.xlsx");
           } catch (error) {
             setErrorMessage(error instanceof Error ? error.message : "Report download failed.");
           } finally {

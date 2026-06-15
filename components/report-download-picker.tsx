@@ -34,7 +34,7 @@ export function ReportDownloadPicker({
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base">
           <FileDown className="size-4 text-primary" />
-          CSV Report
+          Excel Report
         </CardTitle>
       </CardHeader>
       <CardContent className="grid gap-5">

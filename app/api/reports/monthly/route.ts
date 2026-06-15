@@ -35,6 +35,7 @@ import {
   type MetricTotals,
   type VideoContentType
 } from "@/lib/youtube-performance-utils";
+import { buildXlsxWorkbook, type XlsxCellValue } from "@/lib/xlsx-export";
 
 export const dynamic = "force-dynamic";
 
@@ -67,6 +68,8 @@ const CHANNEL_COMPARE_REVENUE_COLUMN_IDS = new Set<ChannelCompareColumnId>([
   "monetized_playbacks",
   "ad_impressions"
 ]);
+const EXCEL_MIME_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const REPORT_COLUMN_WIDTH = 16.86;
 
 export async function GET(request: NextRequest) {
   const account = await getSessionAccount(request.cookies.get(CHANNEL_PULSE_SESSION_COOKIE)?.value);
@@ -113,7 +116,7 @@ export async function GET(request: NextRequest) {
   const channelTitle =
     dashboard.channels.find((channel) => channel.channelId === dashboard.filters.channelId)?.title ??
     (dashboard.filters.channelId === "all" ? "All channels" : dashboard.filters.channelId);
-  const csv = buildReportCsv(report, dashboard, channelTitle);
+  const rows = buildReportRows(report, dashboard, channelTitle);
   const filename = [
     "channel-pulse",
     report,
@@ -122,12 +125,7 @@ export async function GET(request: NextRequest) {
     dashboard.filters.contentType
   ].join("-");
 
-  return new Response(csv, {
-    headers: {
-      "Content-Disposition": `attachment; filename="${filename}.csv"`,
-      "Content-Type": "text/csv; charset=utf-8"
-    }
-  });
+  return buildWorkbookResponse(rows, filename, reportSheetName(report));
 }
 
 async function buildChannelSummaryResponse(request: NextRequest, account: ChannelPulseAccount) {
@@ -148,12 +146,12 @@ async function buildChannelSummaryResponse(request: NextRequest, account: Channe
 
   const requestedColumnIds = uniqueValues(request.nextUrl.searchParams.getAll("column"));
   if (requestedColumnIds.length === 0) {
-    return NextResponse.json({ error: "Select at least one CSV column." }, { status: 400 });
+    return NextResponse.json({ error: "Select at least one report column." }, { status: 400 });
   }
 
   const selectedColumnIds = requestedColumnIds.filter(isChannelSummaryColumnId);
   if (selectedColumnIds.length !== requestedColumnIds.length || selectedColumnIds.length === 0) {
-    return NextResponse.json({ error: "Select valid CSV columns." }, { status: 400 });
+    return NextResponse.json({ error: "Select valid report columns." }, { status: 400 });
   }
 
   const allChannels = filterChannelsForAccount(await listStoredYoutubeManagedChannels(), account);
@@ -165,9 +163,9 @@ async function buildChannelSummaryResponse(request: NextRequest, account: Channe
     return NextResponse.json({ error: "Select valid channels." }, { status: 400 });
   }
 
-  let csv: string;
+  let rows: XlsxCellValue[][];
   try {
-    csv = await buildChannelSummaryCsv({
+    rows = await buildChannelSummaryRows({
       channels: selectedChannels,
       columnIds: selectedColumnIds,
       endDate,
@@ -185,12 +183,7 @@ async function buildChannelSummaryResponse(request: NextRequest, account: Channe
     `${selectedChannels.length}-channels`
   ].join("-");
 
-  return new Response(csv, {
-    headers: {
-      "Content-Disposition": `attachment; filename="${filename}.csv"`,
-      "Content-Type": "text/csv; charset=utf-8"
-    }
-  });
+  return buildWorkbookResponse(rows, filename, "Channel Summary");
 }
 
 async function buildChannelCompareResponse(request: NextRequest, account: ChannelPulseAccount) {
@@ -213,12 +206,12 @@ async function buildChannelCompareResponse(request: NextRequest, account: Channe
 
   const requestedColumnIds = uniqueValues(request.nextUrl.searchParams.getAll("column"));
   if (requestedColumnIds.length === 0) {
-    return NextResponse.json({ error: "Select at least one CSV column." }, { status: 400 });
+    return NextResponse.json({ error: "Select at least one report column." }, { status: 400 });
   }
 
   const selectedColumnIds = requestedColumnIds.filter(isChannelCompareColumnId);
   if (selectedColumnIds.length !== requestedColumnIds.length || selectedColumnIds.length === 0) {
-    return NextResponse.json({ error: "Select valid CSV columns." }, { status: 400 });
+    return NextResponse.json({ error: "Select valid report columns." }, { status: 400 });
   }
 
   const allChannels = filterChannelsForAccount(await listStoredYoutubeManagedChannels(), account);
@@ -230,9 +223,9 @@ async function buildChannelCompareResponse(request: NextRequest, account: Channe
     return NextResponse.json({ error: "Select valid channels." }, { status: 400 });
   }
 
-  let csv: string;
+  let rows: XlsxCellValue[][];
   try {
-    csv = await buildChannelCompareCsv({
+    rows = await buildChannelCompareRows({
       channels: selectedChannels,
       columnIds: selectedColumnIds,
       comparisonEndDate,
@@ -256,15 +249,10 @@ async function buildChannelCompareResponse(request: NextRequest, account: Channe
     `${selectedChannels.length}-channels`
   ].join("-");
 
-  return new Response(csv, {
-    headers: {
-      "Content-Disposition": `attachment; filename="${filename}.csv"`,
-      "Content-Type": "text/csv; charset=utf-8"
-    }
-  });
+  return buildWorkbookResponse(rows, filename, "Compare Summary");
 }
 
-async function buildChannelSummaryCsv({
+async function buildChannelSummaryRows({
   channels,
   columnIds,
   startDate,
@@ -339,15 +327,15 @@ async function buildChannelSummaryCsv({
     return column;
   });
 
-  return toCsv([
+  return [
     columns.map((column) => column.label),
     ...summaries.map((summary) =>
       columns.map((column) => getChannelSummaryCell(column.id, summary, startDate, endDate))
     )
-  ]);
+  ];
 }
 
-async function buildChannelCompareCsv({
+async function buildChannelCompareRows({
   channels,
   columnIds,
   primaryStartDate,
@@ -399,7 +387,7 @@ async function buildChannelCompareCsv({
   };
   const headers = selectedColumns.flatMap((column) => getChannelCompareHeaders(column.id));
 
-  return toCsv([
+  return [
     headers,
     ...primarySummaries.map((primary) => {
       const comparison = comparisonByChannelId.get(primary.channel.channelId) ?? createChannelSummary(primary.channel);
@@ -407,7 +395,7 @@ async function buildChannelCompareCsv({
         getChannelCompareCells(column.id, primary, comparison, dates).map((cell) => cell.value)
       );
     })
-  ]);
+  ];
 }
 
 async function buildChannelSummaries(
@@ -671,7 +659,7 @@ function getChannelSummaryCell(
     case "channel_id":
       return summary.channel.channelId;
     case "period":
-      return formatCsvDateRange(startDate, endDate);
+      return formatReportDateRange(startDate, endDate);
     case "views":
       return totals.views;
     case "watch_hours":
@@ -741,8 +729,8 @@ function getChannelCompareCells(
       return [{ label: "Channel ID", value: primary.channel.channelId }];
     case "date_ranges":
       return [
-        { label: "Range 1", value: formatCsvDateRange(dates.primaryStartDate, dates.primaryEndDate) },
-        { label: "Range 2", value: formatCsvDateRange(dates.comparisonStartDate, dates.comparisonEndDate) }
+        { label: "Range 1", value: formatReportDateRange(dates.primaryStartDate, dates.primaryEndDate) },
+        { label: "Range 2", value: formatReportDateRange(dates.comparisonStartDate, dates.comparisonEndDate) }
       ];
     case "views":
       return compareCells("Views", primary.totals.views, comparison.totals.views, { includePercent: true });
@@ -818,11 +806,11 @@ function compareHeaders(label: string, includePercent = false) {
   return headers;
 }
 
-function formatCsvDateRange(startDate: string, endDate: string) {
-  return `${formatCsvDate(startDate)}-${formatCsvDate(endDate)}`;
+function formatReportDateRange(startDate: string, endDate: string) {
+  return `${formatReportDate(startDate)}-${formatReportDate(endDate)}`;
 }
 
-function formatCsvDate(date: string) {
+function formatReportDate(date: string) {
   const [year, month, day] = date.split("-");
   return `${day}/${month}/${year}`;
 }
@@ -888,13 +876,13 @@ function normalizeReportType(value: string | null): ReportType | null {
   return value && REPORT_TYPES.has(value as ReportType) ? (value as ReportType) : null;
 }
 
-function buildReportCsv(
+function buildReportRows(
   report: ReportType,
   dashboard: Awaited<ReturnType<typeof getYoutubePerformanceDashboard>>,
   channelTitle: string
 ) {
   if (report === "summary") {
-    return toCsv([
+    return [
       ["Category", "Metric", "Value"],
       ["Filter", "Month", dashboard.selectedMonth],
       ["Filter", "Channel", channelTitle],
@@ -906,28 +894,28 @@ function buildReportCsv(
       ["Growth", "Views percent", round(dashboard.growth.views)],
       ["Growth", "Revenue percent", round(dashboard.growth.revenue)],
       ["Growth", "Net subscribers percent", round(dashboard.growth.netSubscribers)]
-    ]);
+    ];
   }
 
   if (report === "formats") {
-    return toCsv([
+    return [
       ["Content type", "Views", "Estimated revenue"],
       ...dashboard.longShortSplit.map((row) => [
         contentTypeLabel(row.contentType),
         row.views,
         round(row.revenue)
       ])
-    ]);
+    ];
   }
 
   if (report === "countries") {
-    return toCsv([
+    return [
       ["Country code", "Country name", "Views", "Estimated revenue", "RPM", "Revenue share percent"],
-      ...dashboard.countryRevenueBreakdown.map((row) => countryRevenueCsvRow(row, dashboard.currentTotals.estimatedRevenue))
-    ]);
+      ...dashboard.countryRevenueBreakdown.map((row) => countryRevenueReportRow(row, dashboard.currentTotals.estimatedRevenue))
+    ];
   }
 
-  return toCsv([
+  return [
     [
       "Section",
       "Rank",
@@ -952,7 +940,39 @@ function buildReportCsv(
     ...videoSectionRows("Old video leaders", dashboard.oldVideoLeaders),
     ...videoSectionRows("Last two months leaders", dashboard.recentVideoLeaders),
     ...videoSectionRows("Least viewed recent videos", dashboard.leastViewedRecentVideos)
-  ]);
+  ];
+}
+
+function buildWorkbookResponse(rows: XlsxCellValue[][], filename: string, sheetName: string) {
+  const workbook = buildXlsxWorkbook({
+    columnWidth: REPORT_COLUMN_WIDTH,
+    rows,
+    sheetName
+  });
+
+  return new Response(new Uint8Array(workbook), {
+    headers: {
+      "Content-Disposition": `attachment; filename="${filename}.xlsx"`,
+      "Content-Type": EXCEL_MIME_TYPE
+    }
+  });
+}
+
+function reportSheetName(report: ReportType) {
+  switch (report) {
+    case "summary":
+      return "Summary";
+    case "formats":
+      return "Formats";
+    case "countries":
+      return "Countries";
+    case "videos":
+      return "Videos";
+    case "channel-summary":
+      return "Channel Summary";
+    case "channel-compare":
+      return "Compare Summary";
+  }
 }
 
 function metricTotalRows(category: string, totals: MetricTotals) {
@@ -970,7 +990,7 @@ function metricTotalRows(category: string, totals: MetricTotals) {
   ];
 }
 
-function countryRevenueCsvRow(row: CountryRevenueRow, totalRevenue: number) {
+function countryRevenueReportRow(row: CountryRevenueRow, totalRevenue: number) {
   return [
     row.countryCode,
     row.countryName,
@@ -1001,19 +1021,6 @@ function videoSectionRows(section: string, rows: VideoPerformanceRow[]) {
     row.adImpressions,
     round(calculatePlaybackCpm(row))
   ]);
-}
-
-function toCsv(rows: Array<Array<string | number>>) {
-  return `${rows.map((row) => row.map(formatCsvCell).join(",")).join("\n")}\n`;
-}
-
-function formatCsvCell(value: string | number) {
-  const text = String(value);
-  if (/[",\n\r]/.test(text)) {
-    return `"${text.replace(/"/g, '""')}"`;
-  }
-
-  return text;
 }
 
 function contentTypeLabel(value: ContentTypeFilter) {

@@ -24,7 +24,7 @@ const dashboardLinks = [
   {
     href: "/reports",
     title: "Report Downloads",
-    description: "Generate CSV reports for range summaries and comparison metrics.",
+    description: "Generate Excel reports for range summaries and comparison metrics.",
     Icon: FileDown,
     adminOnly: true
   }

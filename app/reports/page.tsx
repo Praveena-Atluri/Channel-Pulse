@@ -54,7 +54,7 @@ export default async function ReportsPage({ searchParams }: ReportsPageProps) {
                 </Badge>
               </div>
               <p className="text-sm text-muted-foreground">
-                Custom CSV exports for management reviews and channel-level reporting.
+                Custom Excel exports for management reviews and channel-level reporting.
               </p>
             </div>
           </div>
