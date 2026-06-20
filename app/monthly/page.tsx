@@ -8,6 +8,7 @@ import {
   Eye,
   Film,
   Globe2,
+  Target,
   TrendingUp,
   Users
 } from "lucide-react";
@@ -26,6 +27,12 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { canAccountViewRevenue, getAccountChannelAccess, isAuthConfigured } from "@/lib/auth";
+import {
+  MONTHLY_TARGET_METRICS,
+  getTargetBaselineMonth,
+  type MonthlyTargetMetric
+} from "@/lib/monthly-target-metrics";
+import { getMonthlyTargetDashboardDataSafe, type MonthlyTargetDashboardData } from "@/lib/monthly-targets";
 import { requireCurrentAccount } from "@/lib/server-auth";
 import { ensureYoutubeAnalyticsRangeData, getIncompleteYoutubeAnalyticsChannelIds } from "@/lib/youtube-auto-sync";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
@@ -116,6 +123,18 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
     autoSyncError,
     Date.now()
   ].join("|");
+  const monthlyTargetData =
+    dashboard.schemaReady && canEvaluateDataCoverage
+      ? await getMonthlyTargetDashboardDataSafe({
+          baselineMonth: getTargetBaselineMonth(dashboard.selectedMonth),
+          channels: getDashboardSyncChannels(dashboard.filters.channelId, dashboard.channels),
+          month: dashboard.selectedMonth
+        })
+      : null;
+  const hasMonthlyTargets = Boolean(
+    monthlyTargetData?.schemaReady &&
+      MONTHLY_TARGET_METRICS.some((metric) => monthlyTargetData.totals.target[metric.key] !== null)
+  );
 
   return (
     <main className="youtube-report-page min-h-screen p-4 md:p-6">
@@ -254,6 +273,13 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
                   <LongShortViewsCard rows={dashboard.longShortSplit} compact />
                 )}
               </section>
+
+              {hasMonthlyTargets && monthlyTargetData ? (
+                <TargetProgressCard
+                  channelLabel={dashboard.filters.channelId === "all" ? "All channels" : selectedChannel?.title ?? "Selected channel"}
+                  data={monthlyTargetData}
+                />
+              ) : null}
 
               {canViewRevenue ? (
                 <section className="youtube-report-two-col grid gap-4 lg:grid-cols-[1.1fr_0.9fr]">
@@ -601,6 +627,68 @@ function CountryRevenueCard({ rows, totalRevenue }: { rows: CountryRevenueRow[];
   );
 }
 
+function TargetProgressCard({
+  channelLabel,
+  data
+}: {
+  channelLabel: string;
+  data: MonthlyTargetDashboardData;
+}) {
+  const visibleMetrics = MONTHLY_TARGET_METRICS.filter((metric) => data.totals.target[metric.key] !== null);
+
+  return (
+    <section>
+      <Card className="shadow-sm">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Target className="size-4 text-primary" />
+            Target Progress
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {visibleMetrics.map((metric) => {
+            const progress = data.totals.progress[metric.key];
+            const percent = progress.percent ?? 0;
+
+            return (
+              <div className="rounded-lg border bg-background/70 p-3" key={metric.key}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-bold">{metric.label}</p>
+                    <p className="mt-1 text-xs font-semibold text-muted-foreground">
+                      {channelLabel} · {formatMonthLabel(data.month)}
+                    </p>
+                  </div>
+                  <Badge variant="secondary" className="rounded-md">
+                    {formatPercent(percent)}
+                  </Badge>
+                </div>
+                <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted">
+                  <div className="h-full rounded-full bg-primary" style={{ width: `${Math.min(100, Math.max(0, percent))}%` }} />
+                </div>
+                <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
+                  <TargetMiniMetric label="Actual" value={formatTargetMetricValue(metric.key, progress.actual)} />
+                  <TargetMiniMetric label="Target" value={formatTargetMetricValue(metric.key, progress.target ?? 0)} />
+                  <TargetMiniMetric label="Remaining" value={formatTargetMetricValue(metric.key, progress.remaining ?? 0)} />
+                </div>
+              </div>
+            );
+          })}
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+function TargetMiniMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="font-semibold text-muted-foreground">{label}</p>
+      <p className="mt-0.5 font-black tabular-nums text-foreground">{value}</p>
+    </div>
+  );
+}
+
 function VideoTable({ metric: _metric, ...props }: Parameters<typeof YoutubeVideoTable>[0] & { metric?: "views" | "revenue" }) {
   return <YoutubeVideoTable {...props} />;
 }
@@ -614,7 +702,7 @@ function StatusPanel({ title, message }: { title: string; message: string }) {
   );
 }
 
-function getDashboardSyncChannels(channelId: string, channels: Array<{ channelId: string }>) {
+function getDashboardSyncChannels<T extends { channelId: string }>(channelId: string, channels: T[]) {
   if (channelId === "all") return channels;
   return channels.filter((channel) => channel.channelId === channelId);
 }
@@ -690,6 +778,13 @@ function formatSignedNumber(value: number) {
     signDisplay: "exceptZero",
     maximumFractionDigits: 0
   }).format(value);
+}
+
+function formatTargetMetricValue(metric: MonthlyTargetMetric, value: number) {
+  if (metric === "watchHours") return `${formatCompactNumber(value)} hrs`;
+  if (metric === "netSubscribers") return formatSignedNumber(value);
+
+  return formatCompactNumber(value);
 }
 
 function formatCurrency(value: number) {

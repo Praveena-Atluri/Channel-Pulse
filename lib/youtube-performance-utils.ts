@@ -63,19 +63,30 @@ export function getDefaultReportMonth(now = new Date()) {
   return formatMonth(previousMonth);
 }
 
+export function getCurrentReportMonth(now = new Date()) {
+  return formatMonth(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)));
+}
+
 export function formatMonth(date: Date) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-export function getMonthDateRange(month: string) {
+export function getMonthDateRange(month: string, now = new Date()) {
   const [year, monthNumber] = parseMonth(month);
   const start = new Date(Date.UTC(year, monthNumber - 1, 1));
-  const end = new Date(Date.UTC(year, monthNumber, 1));
+  const calendarEnd = new Date(Date.UTC(year, monthNumber, 1));
+  const currentMonth = getCurrentReportMonth(now);
+  const selectedMonth = formatMonth(start);
+  const end =
+    selectedMonth === currentMonth
+      ? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+      : calendarEnd;
+  const analyticsEnd = new Date(end.getTime() - 86_400_000);
 
   return {
     startDate: formatDate(start),
     endDate: formatDate(end),
-    analyticsEndDate: formatDate(new Date(end.getTime() - 86_400_000))
+    analyticsEndDate: formatDate(analyticsEnd.getTime() < start.getTime() ? start : analyticsEnd)
   };
 }
 

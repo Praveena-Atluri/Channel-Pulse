@@ -23,7 +23,29 @@ try {
   const schemaPath = join(ROOT_DIR, "database", "turso-channel-pulse-schema.sql");
   const schema = await readFile(schemaPath, "utf8");
   await turso.executeMultiple(schema);
+  await ensureMonthlyTargetColumns();
   console.log("Turso schema applied.");
 } finally {
   turso.close();
+}
+
+async function ensureMonthlyTargetColumns() {
+  const result = await turso.execute("pragma table_info(youtube_monthly_channel_targets)");
+  const columns = new Set(result.rows.map((row) => String(row.name)));
+  const additions = [
+    {
+      name: "short_videos_target",
+      sql: "alter table youtube_monthly_channel_targets add column short_videos_target integer check (short_videos_target is null or short_videos_target >= 0)"
+    },
+    {
+      name: "long_videos_target",
+      sql: "alter table youtube_monthly_channel_targets add column long_videos_target integer check (long_videos_target is null or long_videos_target >= 0)"
+    }
+  ];
+
+  for (const addition of additions) {
+    if (!columns.has(addition.name)) {
+      await turso.execute(addition.sql);
+    }
+  }
 }

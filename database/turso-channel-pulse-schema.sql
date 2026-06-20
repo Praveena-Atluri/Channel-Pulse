@@ -120,6 +120,22 @@ create table if not exists youtube_analytics_sync_runs (
   metadata            text not null default '{}'
 );
 
+create table if not exists youtube_monthly_channel_targets (
+  month                  text not null check (length(month) = 7),
+  channel_id             text not null references youtube_managed_channels(channel_id) on delete cascade,
+  short_views_target     integer check (short_views_target is null or short_views_target >= 0),
+  long_views_target      integer check (long_views_target is null or long_views_target >= 0),
+  short_videos_target    integer check (short_videos_target is null or short_videos_target >= 0),
+  long_videos_target     integer check (long_videos_target is null or long_videos_target >= 0),
+  watch_hours_target     real check (watch_hours_target is null or watch_hours_target >= 0),
+  net_subscribers_target integer check (net_subscribers_target is null or net_subscribers_target >= 0),
+  created_by             text,
+  updated_by             text,
+  created_at             text not null default (datetime('now')),
+  updated_at             text not null default (datetime('now')),
+  primary key (month, channel_id)
+);
+
 create index if not exists youtube_video_catalog_channel_idx
   on youtube_video_catalog (channel_id, published_at desc);
 create index if not exists youtube_video_catalog_content_type_idx
@@ -144,3 +160,5 @@ create index if not exists youtube_country_daily_metrics_revenue_idx
   on youtube_country_daily_metrics (channel_id, estimated_revenue desc);
 create index if not exists youtube_analytics_sync_runs_started_idx
   on youtube_analytics_sync_runs (started_at desc);
+create index if not exists youtube_monthly_channel_targets_channel_idx
+  on youtube_monthly_channel_targets (channel_id, month desc);

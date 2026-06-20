@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   calculateNetSubscribers,
   classifyVideoContentType,
+  getCurrentReportMonth,
   getMonthDateRange,
   getPreviousMonth,
   getVideoCohort,
@@ -18,6 +19,17 @@ test("builds calendar month reporting ranges", () => {
     analyticsEndDate: "2026-05-31"
   });
   assert.equal(getPreviousMonth("2026-01"), "2025-12");
+});
+
+test("builds current month reporting ranges through yesterday", () => {
+  const now = new Date(Date.UTC(2026, 5, 20, 8, 30));
+
+  assert.equal(getCurrentReportMonth(now), "2026-06");
+  assert.deepEqual(getMonthDateRange("2026-06", now), {
+    startDate: "2026-06-01",
+    endDate: "2026-06-20",
+    analyticsEndDate: "2026-06-19"
+  });
 });
 
 test("classifies recent videos as selected or previous calendar month", () => {

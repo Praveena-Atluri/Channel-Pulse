@@ -5,6 +5,7 @@ import {
   addMetricTotals,
   calculateNetSubscribers,
   createEmptyTotals,
+  getCurrentReportMonth,
   getDefaultReportMonth,
   getMonthDateRange,
   getPreviousMonth,
@@ -240,8 +241,8 @@ export function normalizeYoutubeComparisonFilters(input: {
 }): YoutubeComparisonFilters {
   const defaultMonth = getDefaultReportMonth();
   const defaultPreviousMonth = getPreviousMonth(defaultMonth);
-  const primaryDefaultRange = getInclusiveMonthDateRange(defaultMonth);
-  const comparisonDefaultRange = getInclusiveMonthDateRange(defaultPreviousMonth);
+  const primaryDefaultRange = getInclusiveMonthDateRange(defaultPreviousMonth);
+  const comparisonDefaultRange = getInclusiveMonthDateRange(defaultMonth);
 
   const primary = normalizeInclusiveDateRange({
     startDate: input.primaryStartDate,
@@ -1076,10 +1077,10 @@ function buildContentTypeComparison(
         contentType,
         primaryViews: primary.views,
         comparisonViews: comparison.views,
-        viewsDelta: primary.views - comparison.views,
+        viewsDelta: comparison.views - primary.views,
         primaryRevenue: primary.estimatedRevenue,
         comparisonRevenue: comparison.estimatedRevenue,
-        revenueDelta: primary.estimatedRevenue - comparison.estimatedRevenue
+        revenueDelta: comparison.estimatedRevenue - primary.estimatedRevenue
       };
     })
     .sort((left, right) => right.primaryViews - left.primaryViews);
@@ -1110,8 +1111,8 @@ function buildComparisonDelta(current: number, previous: number): ComparisonDelt
   return {
     current,
     previous,
-    absolute: current - previous,
-    percent: safePercentChange(current, previous)
+    absolute: previous - current,
+    percent: safePercentChange(previous, current)
   };
 }
 
@@ -1166,7 +1167,9 @@ function hasVideoPerformanceMetrics(row: VideoPerformanceRow) {
 }
 
 function buildAvailableMonths(latestMonth: string) {
-  const [year, month] = latestMonth.split("-").map(Number);
+  const currentMonth = getCurrentReportMonth();
+  const anchorMonth = latestMonth > currentMonth ? latestMonth : currentMonth;
+  const [year, month] = anchorMonth.split("-").map(Number);
   const months: string[] = [];
 
   for (let index = 0; index < 24; index += 1) {

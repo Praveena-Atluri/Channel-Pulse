@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, CalendarDays, FileDown, GitCompareArrows, LoaderCircle } from "lucide-react";
+import { ArrowRight, CalendarDays, FileDown, GitCompareArrows, LoaderCircle, Target } from "lucide-react";
 import Link from "next/link";
 import { useState, type MouseEvent } from "react";
 
@@ -27,6 +27,13 @@ const dashboardLinks = [
     description: "Generate Excel reports for range summaries and comparison metrics.",
     Icon: FileDown,
     adminOnly: true
+  },
+  {
+    href: "/targets",
+    title: "Monthly Targets",
+    description: "Set channel targets for format views, watch hours, and net subscribers.",
+    Icon: Target,
+    adminOnly: true
   }
 ] as const;
 
@@ -46,7 +53,11 @@ export function YoutubeDashboardLinks({ canViewReports = false }: { canViewRepor
 
   return (
     <section
-      className={visibleLinks.length > 2 ? "grid items-stretch gap-4 md:grid-cols-3" : "grid items-stretch gap-4 md:grid-cols-2"}
+      className={
+        visibleLinks.length > 2
+          ? "grid items-stretch gap-4 md:grid-cols-2 xl:grid-cols-4"
+          : "grid items-stretch gap-4 md:grid-cols-2"
+      }
       aria-busy={pendingHref ? "true" : "false"}
     >
       {visibleLinks.map(({ href, title, description, Icon }) => {
