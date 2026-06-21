@@ -1,4 +1,8 @@
-import { getIncompleteYoutubeAnalyticsChannelIds } from "@/lib/youtube-auto-sync";
+import {
+  getIncompleteYoutubeAnalyticsChannelIds,
+  getMissingYoutubeAnalyticsRanges,
+  type MissingYoutubeAnalyticsRange
+} from "@/lib/youtube-auto-sync";
 import {
   listStoredYoutubeManagedChannels,
   refreshYoutubeManagedChannelCatalog,
@@ -110,31 +114,37 @@ async function backfillChannel(
   const startedAt = Date.now();
 
   try {
-    if (!force) {
-      const missingChannelIds = await getIncompleteYoutubeAnalyticsChannelIds({
-        channels: [{ channelId: channel.channelId }],
-        startDate,
-        endDate
-      });
+    const syncRanges: MissingYoutubeAnalyticsRange[] = force
+      ? [{ channelId: channel.channelId, startDate, endDate }]
+      : await getMissingYoutubeAnalyticsRanges({
+          channels: [{ channelId: channel.channelId }],
+          startDate,
+          endDate
+        });
 
-      if (missingChannelIds.length === 0) {
-        return {
-          channel,
-          durationMs: Date.now() - startedAt,
-          metricsRowsSynced: 0,
-          status: "skipped",
-          videosSynced: 0,
-          warnings: []
-        };
-      }
+    if (syncRanges.length === 0) {
+      return {
+        channel,
+        durationMs: Date.now() - startedAt,
+        metricsRowsSynced: 0,
+        status: "skipped",
+        videosSynced: 0,
+        warnings: []
+      };
     }
 
-    const syncResult = await syncYoutubeCmsAnalytics({
-      channelId: channel.channelId,
-      startDate,
-      endDate,
-      syncType: "backfill"
-    });
+    const syncResults = [];
+    for (const range of syncRanges) {
+      syncResults.push(
+        await syncYoutubeCmsAnalytics({
+          channelId: channel.channelId,
+          startDate: range.startDate,
+          endDate: range.endDate,
+          syncType: "backfill"
+        })
+      );
+    }
+
     const missingAfterSync = await getIncompleteYoutubeAnalyticsChannelIds({
       channels: [{ channelId: channel.channelId }],
       startDate,
@@ -148,10 +158,10 @@ async function backfillChannel(
     return {
       channel,
       durationMs: Date.now() - startedAt,
-      metricsRowsSynced: syncResult.metricsRowsSynced,
+      metricsRowsSynced: syncResults.reduce((total, result) => total + result.metricsRowsSynced, 0),
       status: "synced",
-      videosSynced: syncResult.videosSynced,
-      warnings: syncResult.warnings
+      videosSynced: syncResults.reduce((total, result) => total + result.videosSynced, 0),
+      warnings: syncResults.flatMap((result) => result.warnings)
     };
   } catch (error) {
     return {

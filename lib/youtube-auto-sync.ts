@@ -14,6 +14,12 @@ type EnsureYoutubeAnalyticsRangeDataInput = {
   throwOnIncomplete?: boolean;
 };
 
+export type MissingYoutubeAnalyticsRange = {
+  channelId: string;
+  endDate: string;
+  startDate: string;
+};
+
 const CHECK_PAGE_SIZE = 1000;
 const CHANNEL_SYNC_CONCURRENCY = 3;
 const POST_SYNC_CHECK_ATTEMPTS = 15;
@@ -33,45 +39,53 @@ export async function ensureYoutubeAnalyticsRangeData({
     return { syncedChannels: 0 };
   }
 
-  const missingChannelIds = forceSync
-    ? channelIds
-    : await getIncompleteYoutubeAnalyticsChannelIds({ channels, startDate, endDate });
+  const missingRanges = forceSync
+    ? channelIds.map((channelId) => ({ channelId, endDate, startDate }))
+    : await getMissingYoutubeAnalyticsRanges({ channels, startDate, endDate });
   const syncErrors = new Map<string, string>();
+  let quotaExceededError = "";
 
-  await mapWithConcurrency(missingChannelIds, CHANNEL_SYNC_CONCURRENCY, async (channelId) => {
+  await mapWithConcurrency(missingRanges, CHANNEL_SYNC_CONCURRENCY, async (range) => {
+    if (quotaExceededError) return;
+
     try {
       await syncYoutubeAnalyticsRangeOnce({
-        channelId,
-        endDate,
-        startDate
+        channelId: range.channelId,
+        endDate: range.endDate,
+        startDate: range.startDate
       });
     } catch (error) {
-      syncErrors.set(channelId, getErrorMessage(error));
+      const message = getErrorMessage(error);
+      syncErrors.set(getRangeKey(range), message);
+      if (isQuotaExceededError(message)) {
+        quotaExceededError = message;
+      }
     }
   });
 
-  if (missingChannelIds.length > 0) {
-    const syncedChannelIds = await waitForChannelsWithCompleteMetrics(
-      missingChannelIds,
-      startDate,
-      endDate,
-      postSyncCheckAttempts
-    );
-    const incompleteChannelIds = missingChannelIds.filter((channelId) => !syncedChannelIds.has(channelId));
+  if (quotaExceededError && throwOnIncomplete) {
+    throw new Error(quotaExceededError);
+  }
 
-    if (incompleteChannelIds.length > 0 && throwOnIncomplete) {
-      const firstIncompleteChannelId = incompleteChannelIds[0];
-      const syncError = syncErrors.get(firstIncompleteChannelId);
+  if (missingRanges.length > 0) {
+    const incompleteRanges = await waitForRangesWithCompleteMetrics(missingRanges, postSyncCheckAttempts);
+
+    if (incompleteRanges.length > 0 && throwOnIncomplete) {
+      const firstIncompleteRange = incompleteRanges[0];
+      const syncError = syncErrors.get(getRangeKey(firstIncompleteRange));
       if (syncError) {
         throw new Error(syncError);
       }
       throw new Error(
-        `YouTube sync completed, but complete daily channel metrics were not stored for ${firstIncompleteChannelId} from ${startDate} to ${endDate}.`
+        `YouTube sync completed, but complete daily channel metrics were not stored for ${firstIncompleteRange.channelId} from ${firstIncompleteRange.startDate} to ${firstIncompleteRange.endDate}.`
       );
     }
   }
 
-  return { syncedChannels: missingChannelIds.length };
+  return {
+    syncedChannels: new Set(missingRanges.map((range) => range.channelId)).size,
+    syncedRanges: missingRanges.length
+  };
 }
 
 export async function getIncompleteYoutubeAnalyticsChannelIds({
@@ -82,40 +96,63 @@ export async function getIncompleteYoutubeAnalyticsChannelIds({
   const channelIds = getUniqueChannelIds(channels);
   if (channelIds.length === 0) return [];
 
-  const completeChannelIds = await getChannelsWithCompleteMetrics(channelIds, startDate, endDate);
-  return channelIds.filter((channelId) => !completeChannelIds.has(channelId));
+  const missingRanges = await getMissingYoutubeAnalyticsRanges({ channels, startDate, endDate });
+  return Array.from(new Set(missingRanges.map((range) => range.channelId)));
+}
+
+export async function getMissingYoutubeAnalyticsRanges({
+  channels,
+  startDate,
+  endDate
+}: EnsureYoutubeAnalyticsRangeDataInput): Promise<MissingYoutubeAnalyticsRange[]> {
+  const channelIds = getUniqueChannelIds(channels);
+  if (channelIds.length === 0) return [];
+
+  const usableDaysByChannelId = await getUsableDailyMetricDays(channelIds, startDate, endDate);
+  return getMissingRangesForChannelWindow(channelIds, startDate, endDate, usableDaysByChannelId);
 }
 
 function getUniqueChannelIds(channels: AutoSyncChannel[]) {
   return Array.from(new Set(channels.map((channel) => channel.channelId).filter(Boolean)));
 }
 
-async function waitForChannelsWithCompleteMetrics(
-  channelIds: string[],
-  startDate: string,
-  endDate: string,
+async function waitForRangesWithCompleteMetrics(
+  ranges: MissingYoutubeAnalyticsRange[],
   maxAttempts: number
 ) {
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const completeChannelIds = await getChannelsWithCompleteMetrics(channelIds, startDate, endDate);
-    if (channelIds.every((channelId) => completeChannelIds.has(channelId)) || attempt === maxAttempts) {
-      return completeChannelIds;
+    const missingRanges = await getMissingRangesForRequestedRanges(ranges);
+    if (missingRanges.length === 0 || attempt === maxAttempts) {
+      return missingRanges;
     }
 
     await sleep(POST_SYNC_CHECK_DELAY_MS);
   }
 
-  return new Set<string>();
+  return ranges;
 }
 
-async function getChannelsWithCompleteMetrics(channelIds: string[], startDate: string, endDate: string) {
-  const supabase = createSupabaseAdminClient();
-  const expectedDays = getInclusiveDateKeys(startDate, endDate);
-  if (expectedDays.length === 0) {
-    return new Set<string>();
+async function getMissingRangesForRequestedRanges(ranges: MissingYoutubeAnalyticsRange[]) {
+  if (ranges.length === 0) return [];
+
+  const channelIds = Array.from(new Set(ranges.map((range) => range.channelId)));
+  const startDate = ranges.reduce((earliest, range) => (range.startDate < earliest ? range.startDate : earliest), ranges[0].startDate);
+  const endDate = ranges.reduce((latest, range) => (range.endDate > latest ? range.endDate : latest), ranges[0].endDate);
+  const usableDaysByChannelId = await getUsableDailyMetricDays(channelIds, startDate, endDate);
+  const missingRanges: MissingYoutubeAnalyticsRange[] = [];
+
+  for (const range of ranges) {
+    missingRanges.push(
+      ...getMissingRangesForChannelWindow([range.channelId], range.startDate, range.endDate, usableDaysByChannelId)
+    );
   }
 
-  const daysByChannelId = new Map<string, Set<string>>();
+  return missingRanges;
+}
+
+async function getUsableDailyMetricDays(channelIds: string[], startDate: string, endDate: string) {
+  const supabase = createSupabaseAdminClient();
+  const daysByChannelId = new Map(channelIds.map((channelId) => [channelId, new Set<string>()]));
   let offset = 0;
 
   while (true) {
@@ -145,10 +182,6 @@ async function getChannelsWithCompleteMetrics(channelIds: string[], startDate: s
       views: number | string | null;
     }>) {
       if (!hasUsableDailyMetrics(row)) continue;
-
-      if (!daysByChannelId.has(row.channel_id)) {
-        daysByChannelId.set(row.channel_id, new Set());
-      }
       daysByChannelId.get(row.channel_id)?.add(row.day);
     }
 
@@ -159,15 +192,55 @@ async function getChannelsWithCompleteMetrics(channelIds: string[], startDate: s
     offset += CHECK_PAGE_SIZE;
   }
 
-  const completeChannelIds = new Set<string>();
+  return daysByChannelId;
+}
+
+function getMissingRangesForChannelWindow(
+  channelIds: string[],
+  startDate: string,
+  endDate: string,
+  usableDaysByChannelId: Map<string, Set<string>>
+) {
+  const expectedDays = getInclusiveDateKeys(startDate, endDate);
+  if (expectedDays.length === 0) return [];
+
+  const missingRanges: MissingYoutubeAnalyticsRange[] = [];
   for (const channelId of channelIds) {
-    const days = daysByChannelId.get(channelId);
-    if (days && expectedDays.every((day) => days.has(day))) {
-      completeChannelIds.add(channelId);
-    }
+    const usableDays = usableDaysByChannelId.get(channelId) ?? new Set<string>();
+    const missingDays = expectedDays.filter((day) => !usableDays.has(day));
+    missingRanges.push(...groupMissingDays(channelId, missingDays));
   }
 
-  return completeChannelIds;
+  return missingRanges;
+}
+
+function groupMissingDays(channelId: string, missingDays: string[]) {
+  const ranges: MissingYoutubeAnalyticsRange[] = [];
+  let startDate = "";
+  let previousDate = "";
+
+  for (const day of missingDays) {
+    if (!startDate) {
+      startDate = day;
+      previousDate = day;
+      continue;
+    }
+
+    if (day === addDaysToDate(previousDate, 1)) {
+      previousDate = day;
+      continue;
+    }
+
+    ranges.push({ channelId, endDate: previousDate, startDate });
+    startDate = day;
+    previousDate = day;
+  }
+
+  if (startDate) {
+    ranges.push({ channelId, endDate: previousDate, startDate });
+  }
+
+  return ranges;
 }
 
 function hasUsableDailyMetrics(row: {
@@ -224,6 +297,10 @@ function syncYoutubeAnalyticsRangeOnce({
   return syncPromise;
 }
 
+function getRangeKey(range: MissingYoutubeAnalyticsRange) {
+  return `${range.channelId}|${range.startDate}|${range.endDate}`;
+}
+
 async function mapWithConcurrency<T>(
   items: T[],
   concurrency: number,
@@ -244,6 +321,10 @@ function getErrorMessage(error: unknown) {
   } catch {
     return "YouTube sync failed.";
   }
+}
+
+function isQuotaExceededError(message: string) {
+  return message.includes("quotaExceeded") || message.toLowerCase().includes("exceeded your quota");
 }
 
 function getInclusiveDateKeys(startDate: string, endDate: string) {
@@ -270,6 +351,14 @@ function parseDateKey(value: string) {
   const month = Number(match[2]);
   const day = Number(match[3]);
   return new Date(Date.UTC(year, month - 1, day));
+}
+
+function addDaysToDate(value: string, days: number) {
+  const date = parseDateKey(value);
+  if (!date) return value;
+
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function toNumber(value: number | string | null | undefined) {

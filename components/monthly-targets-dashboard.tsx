@@ -33,6 +33,7 @@ type TargetChannel = {
 
 type MonthlyTargetsDashboardProps = {
   availableMonths: string[];
+  canEditTargets?: boolean;
   channels: TargetChannel[];
   defaultMonth: string;
 };
@@ -71,6 +72,7 @@ const CHANNEL_PIE_COLORS = [
 
 export function MonthlyTargetsDashboard({
   availableMonths,
+  canEditTargets = true,
   channels,
   defaultMonth
 }: MonthlyTargetsDashboardProps) {
@@ -91,8 +93,9 @@ export function MonthlyTargetsDashboard({
   const [errorMessage, setErrorMessage] = useState("");
   const statusChannelDropdownRef = useRef<HTMLDetailsElement>(null);
 
-  const selectedChannelIds = mode === "status" ? statusChannelIds : editChannelIds;
-  const setSelectedChannelIds = mode === "status" ? setStatusChannelIds : setEditChannelIds;
+  const activeMode = canEditTargets ? mode : "status";
+  const selectedChannelIds = activeMode === "status" ? statusChannelIds : editChannelIds;
+  const setSelectedChannelIds = activeMode === "status" ? setStatusChannelIds : setEditChannelIds;
   const selectedChannelSet = useMemo(() => new Set(selectedChannelIds), [selectedChannelIds]);
   const filteredChannels = useMemo(() => {
     const query = channelSearch.trim().toLowerCase();
@@ -320,11 +323,11 @@ export function MonthlyTargetsDashboard({
 
   return (
     <div className="grid gap-5">
-      <div className="grid gap-3 md:grid-cols-2">
+      <div className={canEditTargets ? "grid gap-3 md:grid-cols-2" : "grid gap-3"}>
         <button
           className={cn(
             "rounded-md border p-4 text-left transition hover:bg-muted/50",
-            mode === "status" ? "border-primary bg-primary/10 shadow-sm" : "bg-background/80"
+            activeMode === "status" ? "border-primary bg-primary/10 shadow-sm" : "bg-background/80"
           )}
           type="button"
           onClick={() => setMode("status")}
@@ -337,28 +340,30 @@ export function MonthlyTargetsDashboard({
             See target versus achieved so far for selected channels.
           </span>
         </button>
-        <button
-          className={cn(
-            "rounded-md border p-4 text-left transition hover:bg-muted/50",
-            mode === "edit" ? "border-primary bg-primary/10 shadow-sm" : "bg-background/80"
-          )}
-          type="button"
-          onClick={() => setMode("edit")}
-        >
-          <span className="flex items-center gap-2 text-sm font-black">
-            <SlidersHorizontal className="size-4 text-primary" />
-            Set target
-          </span>
-          <span className="mt-1 block text-sm text-muted-foreground">
-            Update monthly goals and download the target sheet.
-          </span>
-        </button>
+        {canEditTargets ? (
+          <button
+            className={cn(
+              "rounded-md border p-4 text-left transition hover:bg-muted/50",
+              activeMode === "edit" ? "border-primary bg-primary/10 shadow-sm" : "bg-background/80"
+            )}
+            type="button"
+            onClick={() => setMode("edit")}
+          >
+            <span className="flex items-center gap-2 text-sm font-black">
+              <SlidersHorizontal className="size-4 text-primary" />
+              Set target
+            </span>
+            <span className="mt-1 block text-sm text-muted-foreground">
+              Update monthly goals and download the target sheet.
+            </span>
+          </button>
+        ) : null}
       </div>
 
       <div
         className={cn(
           "grid gap-3",
-          mode === "edit"
+          activeMode === "edit"
             ? "md:grid-cols-[minmax(12rem,0.5fr)_minmax(0,1fr)]"
             : "md:grid-cols-[minmax(12rem,0.35fr)_minmax(18rem,0.65fr)]"
         )}
@@ -378,7 +383,7 @@ export function MonthlyTargetsDashboard({
           </select>
         </label>
 
-        {mode === "status" ? (
+        {activeMode === "status" ? (
           <div className="grid gap-1 text-sm font-semibold text-muted-foreground">
             <span>Channels</span>
             <details className="group relative" ref={statusChannelDropdownRef}>
@@ -451,7 +456,7 @@ export function MonthlyTargetsDashboard({
         )}
       </div>
 
-      {mode === "edit" ? (
+      {activeMode === "edit" ? (
         <div className="grid gap-4 lg:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
         <div className="rounded-md border bg-background/80 p-3">
           <div className="flex items-center justify-between gap-3">
@@ -565,7 +570,7 @@ export function MonthlyTargetsDashboard({
       </div>
       ) : null}
 
-      {mode === "edit" ? (
+      {activeMode === "edit" ? (
         <div className="rounded-md border bg-background/80">
         <div className="flex flex-col gap-3 border-b p-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="grid gap-1">

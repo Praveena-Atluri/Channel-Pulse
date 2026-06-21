@@ -9,13 +9,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import type { StoredYoutubeManagedChannel } from "@/lib/youtube-managed-channels";
 import type {
-  WeeklyMetricComparison,
   WeeklyMetricValues,
   WeeklyPerformanceDashboardData,
   WeeklyTrendPoint
 } from "@/lib/weekly-performance";
 
 type WeeklyPerformanceDashboardProps = {
+  canViewRevenue: boolean;
   channels: StoredYoutubeManagedChannel[];
   defaultEndDate: string;
   defaultStartDate: string;
@@ -41,7 +41,14 @@ const WEEKLY_TREND_METRICS: Array<{
   { formatter: formatCompactCurrency, key: "estimatedRevenue", label: "Estimated revenue" }
 ];
 
+function getWeeklyTrendMetrics(canViewRevenue: boolean) {
+  return canViewRevenue
+    ? WEEKLY_TREND_METRICS
+    : WEEKLY_TREND_METRICS.filter((metric) => metric.key !== "estimatedRevenue");
+}
+
 export function WeeklyPerformanceDashboard({
+  canViewRevenue,
   channels,
   defaultEndDate,
   defaultStartDate
@@ -153,7 +160,7 @@ export function WeeklyPerformanceDashboard({
             />
           </div>
           <p className="text-xs font-semibold text-muted-foreground">
-            Weekly reports use YouTube-ready data through {defaultEndDate}; recent revenue days can arrive later.
+            Weekly reports use YouTube-ready data through {defaultEndDate}.
           </p>
 
           <div className="rounded-md border bg-background/80 p-3">
@@ -254,12 +261,14 @@ export function WeeklyPerformanceDashboard({
                 {isLoading ? <LoaderCircle className="size-4 animate-spin" /> : <BarChart3 className="size-4" />}
                 {isLoading ? "Syncing weekly data..." : "Apply"}
               </Button>
-              <ReportDownloadButton
-                disabled={!canApply}
-                href={reportHref}
-                idleLabel="Download Weekly Excel"
-                loadingLabel="Syncing data from YouTube..."
-              />
+              {canViewRevenue ? (
+                <ReportDownloadButton
+                  disabled={!canApply}
+                  href={reportHref}
+                  idleLabel="Download Weekly Excel"
+                  loadingLabel="Syncing data from YouTube..."
+                />
+              ) : null}
             </div>
           </div>
         </CardContent>
@@ -274,22 +283,90 @@ export function WeeklyPerformanceDashboard({
           </CardContent>
         </Card>
       ) : null}
-      {data ? <WeeklyResults data={data} /> : null}
+      {data ? <WeeklyResults canViewRevenue={canViewRevenue} data={data} /> : null}
     </div>
   );
 }
 
-function WeeklyResults({ data }: { data: WeeklyPerformanceDashboardData }) {
+function WeeklyResults({
+  canViewRevenue,
+  data
+}: {
+  canViewRevenue: boolean;
+  data: WeeklyPerformanceDashboardData;
+}) {
+  const summaryCards = canViewRevenue
+    ? [
+        { label: "Views", value: formatCompactNumber(data.totals.current.views) },
+        { label: "Watch hours", value: formatCompactNumber(data.totals.current.watchHours) },
+        { label: "Estimated revenue", value: formatCurrency(data.totals.current.estimatedRevenue) },
+        { label: "RPM", value: formatCurrency(data.totals.current.rpm) }
+      ]
+    : [
+        { label: "Views", value: formatCompactNumber(data.totals.current.views) },
+        { label: "Watch hours", value: formatCompactNumber(data.totals.current.watchHours) },
+        { label: "Net subscribers", value: formatSignedNumber(data.totals.current.netSubscribers) },
+        {
+          label: "Videos published",
+          value: `${formatCompactNumber(data.totals.current.longVideosPublished)} long / ${formatCompactNumber(
+            data.totals.current.shortVideosPublished
+          )} short`
+        }
+      ];
+  const weeklySummaryHeaders = canViewRevenue
+    ? [
+        "Channel",
+        "Views",
+        "Watch Hours",
+        "Net Subscribers",
+        "Estimated Revenue",
+        "RPM",
+        "Playback CPM",
+        "Ad Impressions",
+        "Long Videos Published",
+        "Short Videos Published"
+      ]
+    : [
+        "Channel",
+        "Views",
+        "Watch Hours",
+        "Net Subscribers",
+        "Long Videos Published",
+        "Short Videos Published"
+      ];
+  const weeklySummaryRows = data.rows.map((row) =>
+    canViewRevenue
+      ? [
+          row.channel.title,
+          formatCompactNumber(row.current.views),
+          formatCompactNumber(row.current.watchHours),
+          formatSignedNumber(row.current.netSubscribers),
+          formatCurrency(row.current.estimatedRevenue),
+          formatCurrency(row.current.rpm),
+          formatCurrency(row.current.playbackCpm),
+          formatCompactNumber(row.current.adImpressions),
+          formatCompactNumber(row.current.longVideosPublished),
+          formatCompactNumber(row.current.shortVideosPublished)
+        ]
+      : [
+          row.channel.title,
+          formatCompactNumber(row.current.views),
+          formatCompactNumber(row.current.watchHours),
+          formatSignedNumber(row.current.netSubscribers),
+          formatCompactNumber(row.current.longVideosPublished),
+          formatCompactNumber(row.current.shortVideosPublished)
+        ]
+  );
+
   return (
     <div className="grid gap-4">
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard label="Views" value={formatCompactNumber(data.totals.current.views)} />
-        <MetricCard label="Watch hours" value={formatCompactNumber(data.totals.current.watchHours)} />
-        <MetricCard label="Estimated revenue" value={formatCurrency(data.totals.current.estimatedRevenue)} />
-        <MetricCard label="RPM" value={formatCurrency(data.totals.current.rpm)} />
+        {summaryCards.map((card) => (
+          <MetricCard key={card.label} label={card.label} value={card.value} />
+        ))}
       </div>
 
-      <WeeklyTrendSection data={data} points={data.weeklyTrend} />
+      <WeeklyTrendSection canViewRevenue={canViewRevenue} data={data} points={data.weeklyTrend} />
 
       <Card className="shadow-sm">
         <CardHeader>
@@ -297,30 +374,8 @@ function WeeklyResults({ data }: { data: WeeklyPerformanceDashboardData }) {
         </CardHeader>
         <CardContent>
           <DataTable
-            headers={[
-              "Channel",
-              "Views",
-              "Watch Hours",
-              "Net Subscribers",
-              "Estimated Revenue",
-              "RPM",
-              "Playback CPM",
-              "Ad Impressions",
-              "Long Videos Published",
-              "Short Videos Published"
-            ]}
-            rows={data.rows.map((row) => [
-              row.channel.title,
-              formatCompactNumber(row.current.views),
-              formatCompactNumber(row.current.watchHours),
-              formatSignedNumber(row.current.netSubscribers),
-              formatCurrency(row.current.estimatedRevenue),
-              formatCurrency(row.current.rpm),
-              formatCurrency(row.current.playbackCpm),
-              formatCompactNumber(row.current.adImpressions),
-              formatCompactNumber(row.current.longVideosPublished),
-              formatCompactNumber(row.current.shortVideosPublished)
-            ])}
+            headers={weeklySummaryHeaders}
+            rows={weeklySummaryRows}
           />
         </CardContent>
       </Card>
@@ -347,10 +402,19 @@ function WeeklyResults({ data }: { data: WeeklyPerformanceDashboardData }) {
   );
 }
 
-function WeeklyTrendSection({ data, points }: { data: WeeklyPerformanceDashboardData; points: WeeklyTrendPoint[] }) {
+function WeeklyTrendSection({
+  canViewRevenue,
+  data,
+  points
+}: {
+  canViewRevenue: boolean;
+  data: WeeklyPerformanceDashboardData;
+  points: WeeklyTrendPoint[];
+}) {
   return (
     <div className="grid gap-4">
       <TrendPanel
+        canViewRevenue={canViewRevenue}
         description="Actual weekly values for the selected week and the three previous weeks."
         points={points}
         title="Combined Weekly Trend"
@@ -368,7 +432,13 @@ function WeeklyTrendSection({ data, points }: { data: WeeklyPerformanceDashboard
         </div>
         <div className="grid gap-4">
           {data.rows.map((row) => (
-            <TrendPanel key={row.channel.channelId} points={row.weeklyTrend} title={row.channel.title} compact />
+            <TrendPanel
+              canViewRevenue={canViewRevenue}
+              key={row.channel.channelId}
+              points={row.weeklyTrend}
+              title={row.channel.title}
+              compact
+            />
           ))}
         </div>
       </section>
@@ -377,16 +447,20 @@ function WeeklyTrendSection({ data, points }: { data: WeeklyPerformanceDashboard
 }
 
 function TrendPanel({
+  canViewRevenue,
   compact = false,
   description,
   points,
   title
 }: {
+  canViewRevenue: boolean;
   compact?: boolean;
   description?: string;
   points: WeeklyTrendPoint[];
   title: string;
 }) {
+  const trendMetrics = getWeeklyTrendMetrics(canViewRevenue);
+
   return (
     <Card className="shadow-sm">
       <CardHeader className={compact ? "pb-2" : undefined}>
@@ -397,7 +471,7 @@ function TrendPanel({
         {description ? <p className="text-xs font-semibold text-muted-foreground">{description}</p> : null}
       </CardHeader>
       <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {WEEKLY_TREND_METRICS.map((metric) => (
+        {trendMetrics.map((metric) => (
           <WeeklyMetricLineChart
             formatter={metric.formatter}
             key={metric.key}

@@ -8,7 +8,8 @@ import {
 import { resolveWeeklyRequest } from "@/lib/weekly-request";
 import {
   ensureWeeklyPerformanceData,
-  getWeeklyPerformanceDashboard
+  getWeeklyPerformanceDashboard,
+  sanitizeWeeklyPerformanceForViewer
 } from "@/lib/weekly-performance";
 
 export const dynamic = "force-dynamic";
@@ -19,17 +20,13 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "Authentication required." }, { status: 401 });
   }
 
-  if (!canAccountViewRevenue(account)) {
-    return NextResponse.json({ error: "Only admins can view weekly performance." }, { status: 403 });
-  }
-
   const resolved = await resolveWeeklyRequest(request, account);
   if ("error" in resolved) return resolved.error;
 
   try {
     await ensureWeeklyPerformanceData(resolved);
     const dashboard = await getWeeklyPerformanceDashboard(resolved);
-    return NextResponse.json(dashboard);
+    return NextResponse.json(canAccountViewRevenue(account) ? dashboard : sanitizeWeeklyPerformanceForViewer(dashboard));
   } catch (error) {
     return NextResponse.json({ error: getErrorMessage(error) }, { status: 502 });
   }

@@ -270,6 +270,113 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
   }
 }
 
+export async function syncYoutubeDailyVideoMetricsForVideos(input: {
+  channelId: string;
+  date: string;
+  videoIds: string[];
+}) {
+  const videoIds = unique(input.videoIds);
+  if (videoIds.length === 0) {
+    return {
+      status: "success",
+      channelsSynced: 0,
+      videosSynced: 0,
+      metricsRowsSynced: 0,
+      warnings: []
+    };
+  }
+
+  const supabase = createSupabaseAdminClient();
+  const startedAt = new Date().toISOString();
+  let syncRun: SyncRunRecord | null = null;
+  const syncInsert = await supabase
+    .from("youtube_analytics_sync_runs")
+    .insert({
+      sync_type: "manual",
+      status: "running",
+      start_date: input.date,
+      end_date: input.date,
+      started_at: startedAt,
+      metadata: {
+        channelId: input.channelId,
+        mode: "daily-video-metrics",
+        requestedVideoCount: videoIds.length
+      }
+    })
+    .select("id")
+    .single();
+
+  if (syncInsert.error) {
+    throw syncInsert.error;
+  }
+
+  syncRun = syncInsert.data as SyncRunRecord;
+
+  try {
+    const config = getYouTubeCmsConfig();
+    const accessToken = await refreshYouTubeAccessToken(config);
+    const warnings: string[] = [];
+    const metrics = await fetchDailyVideoMetricsForVideos({
+      accessToken,
+      channelId: input.channelId,
+      config,
+      date: input.date,
+      videoIds,
+      warnings
+    });
+
+    await upsertVideoMetrics(supabase, metrics);
+
+    const update = await supabase
+      .from("youtube_analytics_sync_runs")
+      .update({
+        status: "success",
+        finished_at: new Date().toISOString(),
+        channels_synced: 1,
+        videos_synced: videoIds.length,
+        metrics_rows_synced: metrics.length,
+        metadata: {
+          channelId: input.channelId,
+          mode: "daily-video-metrics",
+          requestedVideoCount: videoIds.length,
+          syncedVideoCount: metrics.length,
+          warnings
+        }
+      })
+      .eq("id", syncRun.id);
+
+    if (update.error) throw update.error;
+
+    return {
+      status: "success",
+      channelsSynced: 1,
+      videosSynced: videoIds.length,
+      metricsRowsSynced: metrics.length,
+      warnings
+    };
+  } catch (error) {
+    const message = getErrorMessage(error);
+
+    if (syncRun) {
+      await supabase
+        .from("youtube_analytics_sync_runs")
+        .update({
+          status: "failed",
+          finished_at: new Date().toISOString(),
+          error_message: message,
+          metadata: {
+            channelId: input.channelId,
+            mode: "daily-video-metrics",
+            requestedVideoCount: videoIds.length
+          }
+        })
+        .eq("id", syncRun.id);
+    }
+
+    throw error;
+  }
+}
+
 async function fetchManagedChannelsByContentOwner(accessToken: string, contentOwnerIds: string[]) {
   return Promise.all(
     contentOwnerIds.map(async (contentOwnerId) => ({
@@ -609,6 +716,61 @@ async function fetchVideoPeriodReports(input: {
     metrics: periodRows.flatMap((period) => period.metrics),
     metadata: periodRows.flatMap((period) => period.metadata)
   };
+}
+
+async function fetchDailyVideoMetricsForVideos(input: {
+  accessToken: string;
+  channelId: string;
+  config: ReturnType<typeof getYouTubeCmsConfig>;
+  date: string;
+  videoIds: string[];
+  warnings: string[];
+}) {
+  const metrics: DailyMetricAccumulator[] = [];
+
+  for (const ids of chunk(unique(input.videoIds), 100)) {
+    let chunkReport: AnalyticsReportResult | null = null;
+    const ownerErrors: string[] = [];
+
+    for (const contentOwnerId of input.config.contentOwnerIds) {
+      try {
+        const report = await fetchAnalyticsReportWithFallback({
+          accessToken: input.accessToken,
+          config: withYouTubeContentOwner(input.config, contentOwnerId),
+          startDate: input.date,
+          endDate: input.date,
+          dimensions: ["video"],
+          metricSets: VIDEO_METRIC_SETS,
+          filters: `channel==${input.channelId};video==${ids.join(",")}`,
+          maxResults: ids.length,
+          paginate: false
+        });
+
+        if (report.rows.length > 0 || input.config.contentOwnerIds.length === 1) {
+          chunkReport = report;
+          break;
+        }
+      } catch (error) {
+        ownerErrors.push(getErrorMessage(error));
+      }
+    }
+
+    if (!chunkReport) {
+      if (ownerErrors.length > 0) {
+        input.warnings.push(`Daily video metrics skipped for ${ids.length} video(s): ${ownerErrors.join("\n")}`);
+      }
+      continue;
+    }
+
+    metrics.push(
+      ...rowsFromReport(["video"], chunkReport, {
+        defaultDay: input.date,
+        channelId: input.channelId
+      })
+    );
+  }
+
+  return metrics;
 }
 
 async function fetchVideoIdReports(input: {

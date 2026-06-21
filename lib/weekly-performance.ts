@@ -269,6 +269,72 @@ export function buildWeeklyReportRows(data: WeeklyPerformanceDashboardData) {
   return rows;
 }
 
+export function sanitizeWeeklyPerformanceForViewer(
+  data: WeeklyPerformanceDashboardData
+): WeeklyPerformanceDashboardData {
+  return {
+    ...data,
+    rows: data.rows.map((row) => ({
+      ...row,
+      current: sanitizeWeeklyMetricValues(row.current),
+      monthToMonth: sanitizeWeeklyComparisons(row.monthToMonth),
+      strengths: sanitizeInsightList(row.strengths, "Stable week with no major positive movement."),
+      weaknesses: sanitizeInsightList(row.weaknesses, "No major weakness flagged."),
+      weeklyTrend: row.weeklyTrend.map(sanitizeWeeklyTrendPoint),
+      weekOverWeek: sanitizeWeeklyComparisons(row.weekOverWeek)
+    })),
+    totals: {
+      current: sanitizeWeeklyMetricValues(data.totals.current),
+      monthToMonth: sanitizeWeeklyComparisons(data.totals.monthToMonth),
+      weekOverWeek: sanitizeWeeklyComparisons(data.totals.weekOverWeek)
+    },
+    weeklyTrend: data.weeklyTrend.map(sanitizeWeeklyTrendPoint)
+  };
+}
+
+function sanitizeWeeklyTrendPoint(point: WeeklyTrendPoint): WeeklyTrendPoint {
+  return {
+    ...point,
+    totals: sanitizeWeeklyMetricValues(point.totals)
+  };
+}
+
+function sanitizeWeeklyMetricValues(values: WeeklyMetricValues): WeeklyMetricValues {
+  return {
+    ...values,
+    adImpressions: 0,
+    ctr: null,
+    estimatedRevenue: 0,
+    playbackCpm: 0,
+    revenueGeneratingViews: 0,
+    rpm: 0
+  };
+}
+
+function sanitizeWeeklyComparisons(
+  comparisons: Record<WeeklyComparisonMetric, WeeklyMetricComparison>
+): Record<WeeklyComparisonMetric, WeeklyMetricComparison> {
+  return {
+    ...comparisons,
+    estimatedRevenue: createHiddenComparison(),
+    rpm: createHiddenComparison()
+  };
+}
+
+function sanitizeInsightList(items: string[], fallback: string) {
+  const sanitizedItems = items.filter((item) => !/(revenue|rpm|cpm|monetized|ad impression)/i.test(item));
+  return sanitizedItems.length > 0 ? sanitizedItems : [fallback];
+}
+
+function createHiddenComparison(): WeeklyMetricComparison {
+  return {
+    absolute: null,
+    current: null,
+    percent: null,
+    previous: null
+  };
+}
+
 function assignInsights(rows: WeeklyChannelPerformanceRow[]) {
   const peerAverages = {
     estimatedRevenue: averagePositive(rows.map((row) => row.current.estimatedRevenue)),

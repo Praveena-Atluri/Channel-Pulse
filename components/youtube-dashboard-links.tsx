@@ -1,6 +1,16 @@
 "use client";
 
-import { ArrowRight, BarChart3, CalendarDays, FileDown, GitCompareArrows, LoaderCircle, Target } from "lucide-react";
+import {
+  ArrowRight,
+  BarChart3,
+  CalendarCheck,
+  CalendarDays,
+  FileDown,
+  Film,
+  GitCompareArrows,
+  LoaderCircle,
+  Target
+} from "lucide-react";
 import Link from "next/link";
 import { useState, type MouseEvent } from "react";
 
@@ -26,7 +36,14 @@ const dashboardLinks = [
     title: "Weekly Performance",
     description: "Review weekly channel performance, comparisons, strengths, and weaknesses.",
     Icon: BarChart3,
-    adminOnly: true
+    adminOnly: false
+  },
+  {
+    href: "/daily",
+    title: "Daily Metrics",
+    description: "See videos published on a day with same-day views and video links.",
+    Icon: Film,
+    adminOnly: false
   },
   {
     href: "/reports",
@@ -38,8 +55,15 @@ const dashboardLinks = [
   {
     href: "/targets",
     title: "Monthly Targets",
-    description: "Set channel targets for format views, watch hours, and net subscribers.",
+    description: "Track channel targets for format views, watch hours, and net subscribers.",
     Icon: Target,
+    adminOnly: false
+  },
+  {
+    href: "/daily-targets",
+    title: "Daily Targets",
+    description: "Set per-channel daily long and short publishing targets.",
+    Icon: CalendarCheck,
     adminOnly: true
   }
 ] as const;

@@ -134,6 +134,16 @@ create table if not exists public.youtube_monthly_channel_targets (
   primary key (month, channel_id)
 );
 
+create table if not exists public.youtube_daily_channel_targets (
+  channel_id             text primary key references public.youtube_managed_channels(channel_id) on delete cascade,
+  short_videos_target    bigint check (short_videos_target is null or short_videos_target >= 0),
+  long_videos_target     bigint check (long_videos_target is null or long_videos_target >= 0),
+  created_by             text,
+  updated_by             text,
+  created_at             timestamptz not null default now(),
+  updated_at             timestamptz not null default now()
+);
+
 create index if not exists youtube_video_catalog_channel_idx
   on public.youtube_video_catalog (channel_id, published_at desc);
 create index if not exists youtube_video_catalog_content_type_idx
@@ -160,6 +170,8 @@ create index if not exists youtube_analytics_sync_runs_started_idx
   on public.youtube_analytics_sync_runs (started_at desc);
 create index if not exists youtube_monthly_channel_targets_channel_idx
   on public.youtube_monthly_channel_targets (channel_id, month desc);
+create index if not exists youtube_daily_channel_targets_updated_idx
+  on public.youtube_daily_channel_targets (updated_at desc);
 
 alter table public.youtube_managed_channels             enable row level security;
 alter table public.youtube_video_catalog                enable row level security;
@@ -169,3 +181,4 @@ alter table public.youtube_content_type_daily_metrics   enable row level securit
 alter table public.youtube_country_daily_metrics        enable row level security;
 alter table public.youtube_analytics_sync_runs          enable row level security;
 alter table public.youtube_monthly_channel_targets      enable row level security;
+alter table public.youtube_daily_channel_targets        enable row level security;

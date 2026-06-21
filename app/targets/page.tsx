@@ -1,6 +1,5 @@
 import { Home, Target } from "lucide-react";
 import Link from "next/link";
-import { redirect } from "next/navigation";
 
 import { AppLogo } from "@/components/app-logo";
 import { MonthlyTargetsDashboard } from "@/components/monthly-targets-dashboard";
@@ -17,10 +16,7 @@ export const dynamic = "force-dynamic";
 
 export default async function TargetsPage() {
   const account = await requireCurrentAccount("/targets");
-
-  if (!canAccountViewRevenue(account)) {
-    redirect("/");
-  }
+  const canEditTargets = canAccountViewRevenue(account);
 
   const channels = filterChannelsForAccount(await listStoredYoutubeManagedChannels(), account);
   const availableMonths = getEditableTargetMonths();
@@ -35,11 +31,13 @@ export default async function TargetsPage() {
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="text-2xl font-black">Monthly Targets</h1>
                 <Badge variant="secondary" className="rounded-md">
-                  Admin
+                  {canEditTargets ? "Admin" : "Viewer"}
                 </Badge>
               </div>
               <p className="text-sm text-muted-foreground">
-                Set monthly targets and track achieved performance so far.
+                {canEditTargets
+                  ? "Set monthly targets and track achieved performance so far."
+                  : "View monthly target status for your assigned channels."}
               </p>
             </div>
           </div>
@@ -61,6 +59,7 @@ export default async function TargetsPage() {
           </div>
           <MonthlyTargetsDashboard
             availableMonths={availableMonths}
+            canEditTargets={canEditTargets}
             channels={channels}
             defaultMonth={availableMonths[0]}
           />

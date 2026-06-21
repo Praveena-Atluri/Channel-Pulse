@@ -1,25 +1,29 @@
-import { Home } from "lucide-react";
+import { Home, Target } from "lucide-react";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
 import { AppLogo } from "@/components/app-logo";
+import { DailyPublishingTargetsDashboard } from "@/components/daily-publishing-targets-dashboard";
 import { LogoutButton } from "@/components/logout-button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
-import { WeeklyPerformanceDashboard } from "@/components/weekly-performance-dashboard";
 import { canAccountViewRevenue } from "@/lib/auth";
+import { getDailyPublishingTargetDashboardDataSafe } from "@/lib/daily-targets";
 import { requireCurrentAccount } from "@/lib/server-auth";
-import { getDefaultWeeklyRange } from "@/lib/weekly-performance";
 import { listStoredYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
 
 export const dynamic = "force-dynamic";
 
-export default async function WeeklyPerformancePage() {
-  const account = await requireCurrentAccount("/weekly");
-  const canViewRevenue = canAccountViewRevenue(account);
+export default async function DailyTargetsPage() {
+  const account = await requireCurrentAccount("/daily-targets");
+
+  if (!canAccountViewRevenue(account)) {
+    redirect("/");
+  }
 
   const channels = filterChannelsForAccount(await listStoredYoutubeManagedChannels(), account);
-  const defaultRange = getDefaultWeeklyRange();
+  const dailyTargets = await getDailyPublishingTargetDashboardDataSafe({ channels });
 
   return (
     <main className="youtube-report-page min-h-screen p-4 md:p-6">
@@ -29,13 +33,13 @@ export default async function WeeklyPerformancePage() {
             <AppLogo />
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-2xl font-black">Weekly Performance</h1>
+                <h1 className="text-2xl font-black">Daily Targets</h1>
                 <Badge variant="secondary" className="rounded-md">
-                  {canViewRevenue ? "Admin" : "Viewer"}
+                  Admin
                 </Badge>
               </div>
               <p className="text-sm text-muted-foreground">
-                Channel-wise weekly view for views, watch time, subscribers, publishing, and peer movement.
+                Set daily long and short video publishing targets per channel.
               </p>
             </div>
           </div>
@@ -50,12 +54,13 @@ export default async function WeeklyPerformancePage() {
           </div>
         </header>
 
-        <WeeklyPerformanceDashboard
-          canViewRevenue={canViewRevenue}
-          channels={channels}
-          defaultEndDate={defaultRange.endDate}
-          defaultStartDate={defaultRange.startDate}
-        />
+        <section className="rounded-lg border bg-card/95 p-4 shadow-sm">
+          <DailyPublishingTargetsDashboard
+            errorMessage={dailyTargets.errorMessage}
+            rows={dailyTargets.rows}
+            schemaReady={dailyTargets.schemaReady}
+          />
+        </section>
       </div>
     </main>
   );
