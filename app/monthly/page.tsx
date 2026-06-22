@@ -45,6 +45,7 @@ import {
 } from "@/lib/youtube-performance";
 import {
   calculateNetSubscribers,
+  getCurrentReportMonth,
   getMonthDateRange,
   type MetricTotals
 } from "@/lib/youtube-performance-utils";
@@ -73,6 +74,7 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
   const selectedMonthRange = getMonthDateRange(dashboard.selectedMonth);
   const previousMonthRange = getMonthDateRange(dashboard.previousMonth);
   let autoSyncError = "";
+  let autoSyncWarning = "";
 
   if (dashboard.schemaReady && cmsConfigured) {
     const channelsToSync = getDashboardSyncChannels(dashboard.filters.channelId, dashboard.channels);
@@ -81,12 +83,14 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
         ensureYoutubeAnalyticsRangeData({
           channels: channelsToSync,
           endDate: selectedMonthRange.analyticsEndDate,
-          startDate: selectedMonthRange.startDate
+          startDate: selectedMonthRange.startDate,
+          storePeriodBreakdowns: true
         }),
         ensureYoutubeAnalyticsRangeData({
           channels: channelsToSync,
           endDate: previousMonthRange.analyticsEndDate,
-          startDate: previousMonthRange.startDate
+          startDate: previousMonthRange.startDate,
+          storePeriodBreakdowns: true
         })
       ]);
       dashboard = await getYoutubePerformanceDashboard(filters, getAccountChannelAccess(account));
@@ -102,7 +106,16 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
       if (isCompleteAfterSync) {
         dashboard = await getYoutubePerformanceDashboard(filters, getAccountChannelAccess(account));
       } else {
-        autoSyncError = getErrorMessage(error);
+        autoSyncError = getErrorMessage(error, dashboard.channels);
+      }
+
+      if (autoSyncError && dashboard.selectedMonth === getCurrentReportMonth()) {
+        const refreshedDashboard = await getYoutubePerformanceDashboard(filters, getAccountChannelAccess(account));
+        if (refreshedDashboard.hasSelectedMonthData && refreshedDashboard.hasPreviousMonthData) {
+          dashboard = refreshedDashboard;
+          autoSyncWarning = getCurrentMonthSyncWarning(error, refreshedDashboard.channels);
+          autoSyncError = "";
+        }
       }
     }
   }
@@ -121,6 +134,7 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
     dashboard.filters.contentType,
     canShowComparisonData ? "loaded" : "empty",
     autoSyncError,
+    autoSyncWarning,
     Date.now()
   ].join("|");
   const monthlyTargetData =
@@ -227,7 +241,14 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
         <YoutubeFilterLoadingBoundary
           renderKey={dashboardRenderKey}
         >
-          {canEvaluateDataCoverage && (!canShowComparisonData || autoSyncError) ? (
+          {autoSyncWarning ? (
+            <StatusPanel
+              title="Recent data is still processing"
+              message={autoSyncWarning}
+            />
+          ) : null}
+
+          {canEvaluateDataCoverage && !canShowComparisonData ? (
             <StatusPanel
               title="Data is unavailable"
               message={
@@ -740,7 +761,43 @@ async function hasCompleteMonthlyDataAfterSync({
   }
 }
 
-function getErrorMessage(error: unknown) {
+function getErrorMessage(error: unknown, channels: Array<{ channelId: string; title: string }> = []) {
+  const message = getRawErrorMessage(error);
+  const channelMetricMatch = message.match(
+    /YouTube did not return channel metrics for ([A-Za-z0-9_-]+) from (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})/
+  );
+  if (channelMetricMatch) {
+    const [, channelId, startDate, endDate] = channelMetricMatch;
+    return `YouTube has not returned channel metrics for ${getChannelLabel(channelId, channels)} from ${startDate} to ${endDate}.`;
+  }
+
+  const incompleteMetricMatch = message.match(
+    /complete daily channel metrics were not stored for ([A-Za-z0-9_-]+) from (\d{4}-\d{2}-\d{2}) to (\d{4}-\d{2}-\d{2})/
+  );
+  if (incompleteMetricMatch) {
+    const [, channelId, startDate, endDate] = incompleteMetricMatch;
+    return `YouTube has not finished daily metrics for ${getChannelLabel(channelId, channels)} from ${startDate} to ${endDate}.`;
+  }
+
+  if (message.includes("quotaExceeded") || message.toLowerCase().includes("exceeded your quota")) {
+    return "YouTube API quota was exceeded while refreshing this range.";
+  }
+
+  const firstLine = message.split("\n")[0]?.trim();
+  if (firstLine && firstLine.length <= 240) return firstLine;
+
+  return "Automatic data sync failed while refreshing this range.";
+}
+
+function getCurrentMonthSyncWarning(error: unknown, channels: Array<{ channelId: string; title: string }>) {
+  return `${getErrorMessage(error, channels)} Showing the latest stored monthly data. Recent YouTube metrics can lag by a few days.`;
+}
+
+function getChannelLabel(channelId: string, channels: Array<{ channelId: string; title: string }>) {
+  return channels.find((channel) => channel.channelId === channelId)?.title ?? channelId;
+}
+
+function getRawErrorMessage(error: unknown) {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "Automatic data sync failed.";
@@ -755,7 +812,7 @@ function contentTypeLabel(value: ContentTypeFilter) {
   if (value === "short") return "Short form";
   if (value === "long") return "Long form";
   if (value === "live") return "Live";
-  if (value === "unknown") return "Unknown";
+  if (value === "unknown") return "Posts / other";
   return "All formats";
 }
 

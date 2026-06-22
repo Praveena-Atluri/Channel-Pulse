@@ -263,7 +263,7 @@ async function buildChannelSummaryRows({
   startDate: string;
   endDate: string;
 }) {
-  await ensureYoutubeAnalyticsRangeData({ channels, startDate, endDate });
+  await ensureYoutubeAnalyticsRangeData({ channels, endDate, startDate, storePeriodBreakdowns: false });
   if (hasChannelSummaryRevenueColumns(columnIds)) {
     await ensureRevenueMetricsForRange({ channels, startDate, endDate });
   }
@@ -353,12 +353,14 @@ async function buildChannelCompareRows({
   await ensureYoutubeAnalyticsRangeData({
     channels,
     endDate: primaryEndDate,
-    startDate: primaryStartDate
+    startDate: primaryStartDate,
+    storePeriodBreakdowns: false
   });
   await ensureYoutubeAnalyticsRangeData({
     channels,
     endDate: comparisonEndDate,
-    startDate: comparisonStartDate
+    startDate: comparisonStartDate,
+    storePeriodBreakdowns: false
   });
   if (hasChannelCompareRevenueColumns(columnIds)) {
     await Promise.all([
@@ -501,12 +503,14 @@ async function ensureMonthlyReportRangeData(dashboard: Awaited<ReturnType<typeof
     await ensureYoutubeAnalyticsRangeData({
       channels: channelsToSync,
       endDate: selectedMonthRange.analyticsEndDate,
-      startDate: selectedMonthRange.startDate
+      startDate: selectedMonthRange.startDate,
+      storePeriodBreakdowns: true
     });
     await ensureYoutubeAnalyticsRangeData({
       channels: channelsToSync,
       endDate: previousMonthRange.analyticsEndDate,
-      startDate: previousMonthRange.startDate
+      startDate: previousMonthRange.startDate,
+      storePeriodBreakdowns: true
     });
     return "";
   } catch (error) {
@@ -554,7 +558,8 @@ async function ensureRevenueMetricsForRange({
     channels,
     endDate,
     forceSync: true,
-    startDate
+    startDate,
+    storePeriodBreakdowns: false
   });
 }
 
@@ -1027,7 +1032,7 @@ function contentTypeLabel(value: ContentTypeFilter) {
   if (value === "short") return "Short form";
   if (value === "long") return "Long form";
   if (value === "live") return "Live";
-  if (value === "unknown") return "Unknown";
+  if (value === "unknown") return "Posts / other";
   return "All formats";
 }
 

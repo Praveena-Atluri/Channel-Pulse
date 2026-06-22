@@ -11,8 +11,7 @@ import { ensureYoutubeAnalyticsRangeData } from "@/lib/youtube-auto-sync";
 import { listStoredYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
 import {
   syncYoutubeCmsAnalytics,
-  syncYoutubeCreatorContentTypesForVideos,
-  syncYoutubeDailyVideoMetricsForVideos
+  syncYoutubeCreatorContentTypesForVideos
 } from "@/lib/youtube-performance-sync";
 import { normalizeReportDate } from "@/lib/youtube-performance-utils";
 
@@ -23,7 +22,7 @@ type LoginSyncChannel = {
 const inFlightLoginSyncs = new Map<string, Promise<void>>();
 const CHECK_PAGE_SIZE = 1000;
 const RECENT_REVENUE_REFRESH_COMPLETE_DAYS = 7;
-const TODAY_DAILY_METRICS_CONCURRENCY = 2;
+const TODAY_VIDEO_CATALOG_CONCURRENCY = 2;
 const ZERO_REVENUE_SYNC_CONCURRENCY = 2;
 
 export async function runLoginYoutubeSync(account: ChannelPulseAccount) {
@@ -48,10 +47,11 @@ export async function runLoginYoutubeSync(account: ChannelPulseAccount) {
     await ensureYoutubeAnalyticsRangeData({
       channels,
       endDate,
-      startDate
+      startDate,
+      storePeriodBreakdowns: true
     });
     await syncRecentZeroRevenueRanges(channels);
-    await syncTodayDailyVideoMetrics(channels);
+    await syncTodayPublishedVideos(channels);
   })()
     .then(() => undefined)
     .catch((error) => {
@@ -93,7 +93,7 @@ export function getLoginTodayDate(now = new Date()) {
   return normalizeReportDate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
 }
 
-async function syncTodayDailyVideoMetrics(channels: LoginSyncChannel[]) {
+async function syncTodayPublishedVideos(channels: LoginSyncChannel[]) {
   const channelIds = Array.from(new Set(channels.map((channel) => channel.channelId).filter(Boolean)));
   if (channelIds.length === 0) return;
 
@@ -102,7 +102,7 @@ async function syncTodayDailyVideoMetrics(channels: LoginSyncChannel[]) {
   const today = getLoginTodayDate();
   const tomorrow = addDays(today, 1);
 
-  await mapWithConcurrency(channelIds, TODAY_DAILY_METRICS_CONCURRENCY, async (channelId) => {
+  await mapWithConcurrency(channelIds, TODAY_VIDEO_CATALOG_CONCURRENCY, async (channelId) => {
     try {
       const videos = await fetchChannelVideosPublishedBetween({
         accessToken,
@@ -120,13 +120,8 @@ async function syncTodayDailyVideoMetrics(channels: LoginSyncChannel[]) {
         startDate: today,
         videoIds: channelVideos.map((video) => video.videoId)
       });
-      await syncYoutubeDailyVideoMetricsForVideos({
-        channelId,
-        date: today,
-        videoIds: channelVideos.map((video) => video.videoId)
-      });
     } catch (error) {
-      console.error(`Login today daily metrics sync failed for ${channelId}.`, error);
+      console.error(`Login today published video sync failed for ${channelId}.`, error);
     }
   });
 }
@@ -175,6 +170,7 @@ async function syncRecentZeroRevenueRanges(channels: LoginSyncChannel[]) {
         channelId: range.channelId,
         endDate: range.endDate,
         startDate: range.startDate,
+        storePeriodBreakdowns: false,
         syncType: "daily"
       });
     } catch (error) {

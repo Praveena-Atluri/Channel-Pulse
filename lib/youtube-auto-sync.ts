@@ -11,6 +11,7 @@ type EnsureYoutubeAnalyticsRangeDataInput = {
   postSyncCheckAttempts?: number;
   startDate: string;
   endDate: string;
+  storePeriodBreakdowns?: boolean;
   throwOnIncomplete?: boolean;
 };
 
@@ -32,6 +33,7 @@ export async function ensureYoutubeAnalyticsRangeData({
   postSyncCheckAttempts = POST_SYNC_CHECK_ATTEMPTS,
   startDate,
   endDate,
+  storePeriodBreakdowns,
   throwOnIncomplete = true
 }: EnsureYoutubeAnalyticsRangeDataInput) {
   const channelIds = getUniqueChannelIds(channels);
@@ -52,7 +54,8 @@ export async function ensureYoutubeAnalyticsRangeData({
       await syncYoutubeAnalyticsRangeOnce({
         channelId: range.channelId,
         endDate: range.endDate,
-        startDate: range.startDate
+        startDate: range.startDate,
+        storePeriodBreakdowns
       });
     } catch (error) {
       const message = getErrorMessage(error);
@@ -272,13 +275,15 @@ function sleep(milliseconds: number) {
 function syncYoutubeAnalyticsRangeOnce({
   channelId,
   startDate,
-  endDate
+  endDate,
+  storePeriodBreakdowns
 }: {
   channelId: string;
   startDate: string;
   endDate: string;
+  storePeriodBreakdowns?: boolean;
 }) {
-  const key = `${channelId}|${startDate}|${endDate}`;
+  const key = `${channelId}|${startDate}|${endDate}|${storePeriodBreakdowns ? "breakdowns" : "daily"}`;
   const existingSync = inFlightSyncs.get(key);
   if (existingSync) return existingSync;
 
@@ -286,6 +291,7 @@ function syncYoutubeAnalyticsRangeOnce({
     channelId,
     startDate,
     endDate,
+    storePeriodBreakdowns,
     syncType: "manual"
   })
     .then(() => undefined)

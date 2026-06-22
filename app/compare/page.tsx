@@ -63,12 +63,14 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
       await ensureYoutubeAnalyticsRangeData({
         channels: channelsToSync,
         endDate: dashboard.filters.primaryEndDate,
-        startDate: dashboard.filters.primaryStartDate
+        startDate: dashboard.filters.primaryStartDate,
+        storePeriodBreakdowns: false
       });
       await ensureYoutubeAnalyticsRangeData({
         channels: channelsToSync,
         endDate: dashboard.filters.comparisonEndDate,
-        startDate: dashboard.filters.comparisonStartDate
+        startDate: dashboard.filters.comparisonStartDate,
+        storePeriodBreakdowns: false
       });
       dashboard = await getYoutubeComparisonDashboard(filters, getAccountChannelAccess(account));
     } catch (error) {
@@ -644,7 +646,7 @@ function contentTypeLabel(value: ContentTypeFilter) {
   if (value === "short") return "Short form";
   if (value === "long") return "Long form";
   if (value === "live") return "Live";
-  if (value === "unknown") return "Unknown";
+  if (value === "unknown") return "Posts / other";
   return "All formats";
 }
 

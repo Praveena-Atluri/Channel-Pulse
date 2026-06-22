@@ -845,8 +845,7 @@ async function getVideoMetricRows(
       .select(
         "day,channel_id,video_id,views,estimated_minutes_watched,estimated_revenue,estimated_ad_revenue,gross_revenue,monetized_playbacks,ad_impressions,playback_based_cpm"
       )
-      .gte("day", startDate)
-      .lt("day", endDate)
+      .eq("day", startDate)
       .order("day", { ascending: true })
       .order("channel_id", { ascending: true })
       .order("video_id", { ascending: true })

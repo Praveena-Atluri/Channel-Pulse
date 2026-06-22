@@ -6,13 +6,10 @@ export type DailyMetricsVideoRow = {
   channelId: string;
   channelTitle: string;
   contentType: VideoContentType;
-  estimatedRevenue: number | null;
-  hasDailyMetrics: boolean;
   publishedAt: string | null;
   thumbnailUrl: string | null;
   title: string;
   videoId: string;
-  views: number | null;
 };
 
 export type DailyMetricsDashboardData = {
@@ -20,12 +17,9 @@ export type DailyMetricsDashboardData = {
   date: string;
   rows: DailyMetricsVideoRow[];
   totals: {
-    estimatedRevenue: number | null;
     longVideosPublished: number;
     shortVideosPublished: number;
     unclassifiedVideosPublished: number;
-    videosWithDailyMetrics: number;
-    views: number | null;
   };
 };
 
@@ -36,12 +30,6 @@ type DailyVideoCatalogRow = {
   thumbnail_url: string | null;
   title: string | null;
   video_id: string;
-};
-
-type DailyVideoMetricRow = {
-  estimated_revenue: number | string | null;
-  video_id: string;
-  views: number | string | null;
 };
 
 const PAGE_SIZE = 1000;
@@ -84,44 +72,30 @@ export async function getDailyMetricsDashboardData({
     channelId === "all" ? channels.map((channel) => channel.channelId) : channels.some((channel) => channel.channelId === channelId) ? [channelId] : [];
   const channelTitleById = new Map(channels.map((channel) => [channel.channelId, channel.title]));
   const catalogRows = selectedChannelIds.length > 0 ? await getPublishedVideoCatalogRows(selectedChannelIds, date) : [];
-  const metricRows = await getDailyVideoMetricRows(catalogRows.map((row) => row.video_id), date);
-  const metricByVideoId = new Map(metricRows.map((row) => [row.video_id, row]));
   const rows = catalogRows
     .map((row) => {
-      const metric = metricByVideoId.get(row.video_id);
-
       return {
         channelId: row.channel_id,
         channelTitle: channelTitleById.get(row.channel_id) ?? row.channel_id,
         contentType: row.content_type ?? "unknown",
-        estimatedRevenue: metric ? toNumber(metric.estimated_revenue) : null,
-        hasDailyMetrics: Boolean(metric),
         publishedAt: row.published_at,
         thumbnailUrl: row.thumbnail_url,
         title: row.title || row.video_id,
-        videoId: row.video_id,
-        views: metric ? Math.round(toNumber(metric.views)) : null
+        videoId: row.video_id
       };
     })
     .sort((first, second) => {
       return getTime(first.publishedAt) - getTime(second.publishedAt);
     });
-  const rowsWithDailyMetrics = rows.filter((row) => row.hasDailyMetrics);
 
   return {
     channelId: selectedChannelIds.length === 1 ? selectedChannelIds[0] : "all",
     date,
     rows,
     totals: {
-      estimatedRevenue:
-        rowsWithDailyMetrics.length > 0
-          ? rowsWithDailyMetrics.reduce((total, row) => total + (row.estimatedRevenue ?? 0), 0)
-          : null,
       longVideosPublished: rows.filter((row) => row.contentType === "long").length,
       shortVideosPublished: rows.filter((row) => row.contentType === "short").length,
-      unclassifiedVideosPublished: rows.filter((row) => row.contentType !== "long" && row.contentType !== "short").length,
-      videosWithDailyMetrics: rowsWithDailyMetrics.length,
-      views: rowsWithDailyMetrics.length > 0 ? rowsWithDailyMetrics.reduce((total, row) => total + (row.views ?? 0), 0) : null
+      unclassifiedVideosPublished: rows.filter((row) => row.contentType !== "long" && row.contentType !== "short").length
     }
   };
 }
@@ -152,45 +126,12 @@ async function getPublishedVideoCatalogRows(channelIds: string[], date: string) 
   return rows;
 }
 
-async function getDailyVideoMetricRows(videoIds: string[], date: string) {
-  const supabase = createSupabaseAdminClient();
-  const rows: DailyVideoMetricRow[] = [];
-
-  for (const ids of chunk(Array.from(new Set(videoIds)), 500)) {
-    if (ids.length === 0) continue;
-
-    const { data, error } = await supabase
-      .from("youtube_video_daily_metrics")
-      .select("video_id,views,estimated_revenue")
-      .eq("day", date)
-      .in("video_id", ids);
-
-    if (error) throw error;
-    rows.push(...((data ?? []) as DailyVideoMetricRow[]));
-  }
-
-  return rows;
-}
-
 function addDays(value: string, days: number) {
   const date = new Date(`${value}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) return value;
 
   date.setUTCDate(date.getUTCDate() + days);
   return date.toISOString().slice(0, 10);
-}
-
-function chunk<T>(items: T[], size: number) {
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += size) {
-    chunks.push(items.slice(index, index + size));
-  }
-  return chunks;
-}
-
-function toNumber(value: number | string | null | undefined) {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function getTime(value: string | null) {

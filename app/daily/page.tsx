@@ -1,4 +1,4 @@
-import { ExternalLink, Film, Home } from "lucide-react";
+import { ExternalLink, Film, Home, LoaderCircle } from "lucide-react";
 import Link from "next/link";
 
 import { AppLogo } from "@/components/app-logo";
@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { YoutubeAutoSubmitForm } from "@/components/youtube-auto-submit-form";
-import { canAccountViewRevenue } from "@/lib/auth";
+import { YoutubeFilterLoadingBoundary } from "@/components/youtube-filter-loading-boundary";
 import {
   getDailyMetricsDashboardData,
   getDefaultDailyMetricsDate,
@@ -23,10 +23,7 @@ import {
 import { requireCurrentAccount } from "@/lib/server-auth";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import { listStoredYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
-import {
-  syncYoutubeCreatorContentTypesForVideos,
-  syncYoutubeDailyVideoMetricsForVideos
-} from "@/lib/youtube-performance-sync";
+import { syncYoutubeCreatorContentTypesForVideos } from "@/lib/youtube-performance-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -37,20 +34,14 @@ type DailyMetricsPageProps = {
   }>;
 };
 
-const RECENT_METRIC_FRESHNESS_DAYS = 4;
-const REVENUE_PENDING_DAYS = 7;
-
 export default async function DailyMetricsPage({ searchParams }: DailyMetricsPageProps) {
   const params = await searchParams;
   const account = await requireCurrentAccount("/daily");
-  const canViewRevenue = canAccountViewRevenue(account);
 
   const channels = filterChannelsForAccount(await listStoredYoutubeManagedChannels(), account);
   const maxDate = getMaxDailyMetricsDate();
   const defaultDate = getDefaultDailyMetricsDate();
   const date = normalizeDailyMetricsDate(params.date, maxDate, defaultDate);
-  const showFreshnessNote = isWithinRecentDays(date, maxDate, RECENT_METRIC_FRESHNESS_DAYS);
-  const shouldMarkRevenuePending = canViewRevenue && isWithinRecentDays(date, maxDate, REVENUE_PENDING_DAYS);
   const requestedChannelId = params.channel || "all";
   const channelId =
     requestedChannelId === "all" || channels.some((channel) => channel.channelId === requestedChannelId)
@@ -66,14 +57,6 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
         await syncMissingDailyVideoContentTypes(rowsNeedingContentTypeSync, date, maxDate);
         dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
       }
-
-      const rowsNeedingDailyMetricSync = dashboard.rows.filter(
-        (row) => !row.hasDailyMetrics || shouldRefreshPendingRevenue(row, shouldMarkRevenuePending)
-      );
-      if (rowsNeedingDailyMetricSync.length > 0) {
-        await syncMissingDailyVideoMetrics(rowsNeedingDailyMetricSync, date);
-        dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
-      }
     } catch (error) {
       syncMessage = getErrorMessage(error);
     }
@@ -85,6 +68,7 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
     channels: targetChannels
   });
   const publishingTargets = getPublishingTargetTotals(dailyTargets.rows);
+  const dashboardRenderKey = `${date}:${dashboard.channelId}`;
 
   return (
     <main className="youtube-report-page min-h-screen p-4 md:p-6">
@@ -94,16 +78,12 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
             <AppLogo />
             <div>
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="text-2xl font-black">Daily Metrics</h1>
+                <h1 className="text-2xl font-black">Daily Publishing</h1>
                 <Badge variant="secondary" className="rounded-md">
-                  {canViewRevenue ? "Admin" : "Viewer"}
+                  {account.role === "admin" ? "Admin" : "Viewer"}
                 </Badge>
               </div>
-              <p className="text-sm text-muted-foreground">
-                {canViewRevenue
-                  ? "Published videos with same-day views and revenue from stored CMS metrics."
-                  : "Published videos with same-day views from stored CMS metrics."}
-              </p>
+              <p className="text-sm text-muted-foreground">Published videos categorized as long or short.</p>
             </div>
           </div>
 
@@ -121,7 +101,7 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-base">
               <Film className="size-4 text-primary" />
-              Daily Video Metrics
+              Daily Published Videos
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -152,84 +132,67 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
                 </select>
               </label>
             </YoutubeAutoSubmitForm>
-            {showFreshnessNote ? (
+            {syncMessage ? (
               <div className="mt-3 rounded-md border border-amber-400/60 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-950 dark:bg-amber-500/10 dark:text-amber-100">
-                Views and revenue for recent dates may change because YouTube can take up to 4 days to finalize metrics.
+                {syncMessage}
               </div>
             ) : null}
           </CardContent>
         </Card>
 
-        <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <SummaryCard
-            label="Long videos published"
-            value={formatPublishedTargetValue(dashboard.totals.longVideosPublished, publishingTargets.longVideos)}
-            valueClassName={getPublishingTargetClass(dashboard.totals.longVideosPublished, publishingTargets.longVideos)}
-            helper={publishingTargets.longVideos === null ? undefined : "Published / target"}
-          />
-          <SummaryCard
-            label="Short videos published"
-            value={formatPublishedTargetValue(dashboard.totals.shortVideosPublished, publishingTargets.shortVideos)}
-            valueClassName={getPublishingTargetClass(dashboard.totals.shortVideosPublished, publishingTargets.shortVideos)}
-            helper={publishingTargets.shortVideos === null ? undefined : "Published / target"}
-          />
-          {dashboard.totals.unclassifiedVideosPublished > 0 ? (
-            <SummaryCard label="Unclassified videos" value={formatCompactNumber(dashboard.totals.unclassifiedVideosPublished)} />
-          ) : null}
-          <SummaryCard label="Same-day views" value={formatNullableNumber(dashboard.totals.views)} />
-          {canViewRevenue ? (
+        <YoutubeFilterLoadingBoundary fallback={<DailyPublishingLoadingPanel />} renderKey={dashboardRenderKey}>
+          <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             <SummaryCard
-              helper={shouldMarkRevenuePending && isZeroRevenue(dashboard.totals.estimatedRevenue) ? "Revenue can arrive later" : undefined}
-              label="Same-day revenue"
-              value={formatDailyRevenue(dashboard.totals.estimatedRevenue, shouldMarkRevenuePending)}
+              label="Long videos published"
+              value={formatPublishedTargetValue(dashboard.totals.longVideosPublished, publishingTargets.longVideos)}
+              valueClassName={getPublishingTargetClass(dashboard.totals.longVideosPublished, publishingTargets.longVideos)}
+              helper={publishingTargets.longVideos === null ? undefined : "Published / target"}
             />
-          ) : null}
-        </section>
+            <SummaryCard
+              label="Short videos published"
+              value={formatPublishedTargetValue(dashboard.totals.shortVideosPublished, publishingTargets.shortVideos)}
+              valueClassName={getPublishingTargetClass(dashboard.totals.shortVideosPublished, publishingTargets.shortVideos)}
+              helper={publishingTargets.shortVideos === null ? undefined : "Published / target"}
+            />
+            {dashboard.totals.unclassifiedVideosPublished > 0 ? (
+              <SummaryCard label="Unclassified videos" value={formatCompactNumber(dashboard.totals.unclassifiedVideosPublished)} />
+            ) : null}
+          </section>
 
-        <Card className="shadow-sm">
-          <CardHeader>
-            <CardTitle className="text-base">Videos Published On {formatDateLabel(date)}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {dashboard.rows.length > 0 ? (
-              <div className="grid gap-3">
-                {dashboard.totals.videosWithDailyMetrics < dashboard.rows.length ? (
-                  <div className="rounded-md border border-amber-400/60 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-950 dark:bg-amber-500/10 dark:text-amber-100">
-                    Same-day metrics are unavailable for{" "}
-                    {formatNumber(dashboard.rows.length - dashboard.totals.videosWithDailyMetrics)} of{" "}
-                    {formatNumber(dashboard.rows.length)} published videos on this date.
-                    {syncMessage ? <span className="mt-1 block">{syncMessage}</span> : null}
-                  </div>
-                ) : null}
-                <DailyVideoTable
-                  canViewRevenue={canViewRevenue}
-                  rows={dashboard.rows}
-                  shouldMarkRevenuePending={shouldMarkRevenuePending}
-                />
-              </div>
-            ) : (
-              <div className="rounded-md border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
-                No videos are stored as published on this date for the selected channel filter.
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          <Card className="shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-base">Videos Published On {formatDateLabel(date)}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              {dashboard.rows.length > 0 ? (
+                <div className="grid gap-3">
+                  <DailyVideoTable rows={dashboard.rows} />
+                </div>
+              ) : (
+                <div className="rounded-md border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
+                  No videos are stored as published on this date for the selected channel filter.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </YoutubeFilterLoadingBoundary>
       </div>
     </main>
   );
 }
 
-async function syncMissingDailyVideoMetrics(rows: DailyMetricsVideoRow[], date: string) {
-  const videoIdsByChannelId = new Map<string, string[]>();
-  for (const row of rows) {
-    const videoIds = videoIdsByChannelId.get(row.channelId) ?? [];
-    videoIds.push(row.videoId);
-    videoIdsByChannelId.set(row.channelId, videoIds);
-  }
-
-  for (const [channelId, videoIds] of videoIdsByChannelId) {
-    await syncYoutubeDailyVideoMetricsForVideos({ channelId, date, videoIds });
-  }
+function DailyPublishingLoadingPanel() {
+  return (
+    <section className="rounded-lg border bg-card/95 p-8 shadow-sm" aria-live="polite">
+      <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-center">
+        <LoaderCircle className="size-8 animate-spin text-primary" />
+        <div>
+          <p className="text-base font-black text-foreground">Loading published videos...</p>
+          <p className="text-sm text-muted-foreground">Refreshing the daily publishing view for the selected filter.</p>
+        </div>
+      </div>
+    </section>
+  );
 }
 
 async function syncMissingDailyVideoContentTypes(rows: DailyMetricsVideoRow[], startDate: string, endDate: string) {
@@ -245,25 +208,15 @@ async function syncMissingDailyVideoContentTypes(rows: DailyMetricsVideoRow[], s
   }
 }
 
-function DailyVideoTable({
-  canViewRevenue,
-  rows,
-  shouldMarkRevenuePending
-}: {
-  canViewRevenue: boolean;
-  rows: DailyMetricsVideoRow[];
-  shouldMarkRevenuePending: boolean;
-}) {
+function DailyVideoTable({ rows }: { rows: DailyMetricsVideoRow[] }) {
   return (
     <div className="overflow-x-auto rounded-md border">
-      <table className="w-full min-w-[62rem] border-collapse text-sm">
+      <table className="w-full min-w-[46rem] border-collapse text-sm">
         <thead className="bg-muted/50 text-left text-xs uppercase text-muted-foreground">
           <tr>
             <th className="px-3 py-2 font-black">Video</th>
             <th className="px-3 py-2 font-black">Channel</th>
             <th className="px-3 py-2 font-black">Format</th>
-            <th className="px-3 py-2 text-right font-black">Views</th>
-            {canViewRevenue ? <th className="px-3 py-2 text-right font-black">Revenue</th> : null}
             <th className="px-3 py-2 font-black">Published</th>
           </tr>
         </thead>
@@ -303,14 +256,6 @@ function DailyVideoTable({
                   {row.contentType}
                 </Badge>
               </td>
-              <td className="px-3 py-2 text-right align-top font-bold tabular-nums">
-                {formatNullableNumber(row.views)}
-              </td>
-              {canViewRevenue ? (
-                <td className="px-3 py-2 text-right align-top font-bold tabular-nums">
-                  {formatDailyRevenue(row.estimatedRevenue, shouldMarkRevenuePending)}
-                </td>
-              ) : null}
               <td className="px-3 py-2 align-top text-muted-foreground">{formatDateTimeLabel(row.publishedAt)}</td>
             </tr>
           ))}
@@ -373,36 +318,6 @@ function getPublishingTargetClass(published: number, target: number | null) {
   return published >= target ? "text-emerald-600 dark:text-emerald-300" : "text-red-600 dark:text-red-300";
 }
 
-function formatNullableNumber(value: number | null) {
-  return value === null ? "Unavailable" : formatNumber(value);
-}
-
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat("en-US", {
-    currency: "USD",
-    maximumFractionDigits: 2,
-    style: "currency"
-  }).format(value);
-}
-
-function formatNullableCurrency(value: number | null) {
-  return value === null ? "Unavailable" : formatCurrency(value);
-}
-
-function formatDailyRevenue(value: number | null, shouldMarkPending: boolean) {
-  if (value === null) return "Unavailable";
-  if (shouldMarkPending && isZeroRevenue(value)) return "Pending";
-  return formatCurrency(value);
-}
-
-function isZeroRevenue(value: number | null) {
-  return value !== null && Math.abs(value) < 0.000001;
-}
-
-function shouldRefreshPendingRevenue(row: DailyMetricsVideoRow, shouldMarkRevenuePending: boolean) {
-  return shouldMarkRevenuePending && row.hasDailyMetrics && isZeroRevenue(row.estimatedRevenue);
-}
-
 function formatDateLabel(value: string) {
   const date = new Date(`${value}T00:00:00.000Z`);
   if (Number.isNaN(date.getTime())) return value;
@@ -426,15 +341,6 @@ function formatDateTimeLabel(value: string | null) {
     month: "short",
     year: "numeric"
   }).format(date);
-}
-
-function isWithinRecentDays(date: string, today: string, dayCount: number) {
-  const selected = new Date(`${date}T00:00:00.000Z`);
-  const current = new Date(`${today}T00:00:00.000Z`);
-  if (Number.isNaN(selected.getTime()) || Number.isNaN(current.getTime())) return false;
-
-  const ageInDays = Math.floor((current.getTime() - selected.getTime()) / 86_400_000);
-  return ageInDays >= 0 && ageInDays < dayCount;
 }
 
 function getPublishingTargetTotals(rows: DailyPublishingTargetDashboardRow[]) {

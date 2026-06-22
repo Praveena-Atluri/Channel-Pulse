@@ -7,10 +7,15 @@ export const YOUTUBE_FILTER_LOADING_EVENT = "youtube-filter-loading";
 
 type YoutubeFilterLoadingBoundaryProps = {
   children: ReactNode;
+  fallback?: ReactNode;
   renderKey?: string;
 };
 
-export function YoutubeFilterLoadingBoundary({ children, renderKey = "" }: YoutubeFilterLoadingBoundaryProps) {
+export function YoutubeFilterLoadingBoundary({
+  children,
+  fallback,
+  renderKey = ""
+}: YoutubeFilterLoadingBoundaryProps) {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
@@ -32,7 +37,7 @@ export function YoutubeFilterLoadingBoundary({ children, renderKey = "" }: Youtu
   }, []);
 
   if (isLoading) {
-    return <YoutubeDashboardLoadingPanel />;
+    return fallback ?? <YoutubeDashboardLoadingPanel />;
   }
 
   return <>{children}</>;
