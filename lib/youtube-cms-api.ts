@@ -426,6 +426,41 @@ export async function fetchYouTubeVideos(
   return videos;
 }
 
+export async function fetchYouTubeShortsPlaylistMemberships(input: {
+  accessToken: string;
+  channelId: string;
+  videoIds: string[];
+}): Promise<Map<string, boolean>> {
+  const shortsPlaylistId = getShortsPlaylistId(input.channelId);
+  const videoIds = unique(input.videoIds);
+  const results = await mapWithConcurrency(videoIds, 5, async (videoId) => {
+    const params = new URLSearchParams({
+      part: "contentDetails",
+      playlistId: shortsPlaylistId,
+      videoId,
+      maxResults: "1"
+    });
+
+    const response = await fetch(`${YOUTUBE_DATA_API_BASE}/playlistItems?${params}`, {
+      headers: { authorization: `Bearer ${input.accessToken}` },
+      signal: AbortSignal.timeout(GOOGLE_API_TIMEOUT_MS),
+      cache: "no-store"
+    });
+
+    if (!response.ok) {
+      throw new Error(`YouTube shorts playlist lookup failed: ${await response.text()}`);
+    }
+
+    const payload = (await response.json()) as {
+      items?: Array<{ contentDetails?: { videoId?: string } }>;
+    };
+
+    return [videoId, (payload.items ?? []).some((item) => item.contentDetails?.videoId === videoId)] as const;
+  });
+
+  return new Map(results);
+}
+
 export async function fetchChannelVideosPublishedBetween(input: {
   accessToken: string;
   channelId: string;
@@ -527,6 +562,14 @@ async function fetchUploadsPlaylistId(accessToken: string, channelId: string) {
   return uploadsPlaylistId;
 }
 
+function getShortsPlaylistId(channelId: string) {
+  if (!channelId.startsWith("UC") || channelId.length <= 2) {
+    throw new Error(`Cannot derive Shorts playlist for channel ${channelId}.`);
+  }
+
+  return `UUSH${channelId.slice(2)}`;
+}
+
 function normalizeAnalyticsRows(report: RawAnalyticsReport): AnalyticsReportRow[] {
   const headers = report.columnHeaders?.map((header) => header.name) ?? [];
   return (report.rows ?? []).map((row) => {
@@ -567,4 +610,19 @@ function chunk<T>(items: T[], size: number) {
     chunks.push(items.slice(index, index + size));
   }
   return chunks;
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  callback: (item: T) => Promise<R>
+) {
+  const results: R[] = [];
+
+  for (let index = 0; index < items.length; index += concurrency) {
+    const batch = items.slice(index, index + concurrency);
+    results.push(...(await Promise.all(batch.map(callback))));
+  }
+
+  return results;
 }

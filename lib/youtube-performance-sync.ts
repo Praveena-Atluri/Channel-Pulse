@@ -4,6 +4,7 @@ import {
   fetchAnalyticsReportWithFallback,
   fetchChannelVideosPublishedBetween,
   fetchManagedYouTubeChannels,
+  fetchYouTubeShortsPlaylistMemberships,
   fetchYouTubeVideos,
   getYouTubeCmsConfig,
   refreshYouTubeAccessToken,
@@ -864,6 +865,49 @@ async function fetchCreatorContentTypesForVideos(input: {
 
       if (ids.every((videoId) => contentTypesByVideoId.has(videoId))) break;
     }
+  }
+
+  const unresolvedVideoIds = unique(input.videoIds).filter((videoId) => !contentTypesByVideoId.has(videoId));
+  if (unresolvedVideoIds.length > 0) {
+    const fallbackContentTypesByVideoId = await fetchShortsPlaylistContentTypesForVideos({
+      accessToken: input.accessToken,
+      channelId: input.channelId,
+      videoIds: unresolvedVideoIds,
+      warnings: input.warnings
+    });
+
+    for (const [videoId, contentType] of fallbackContentTypesByVideoId) {
+      contentTypesByVideoId.set(videoId, contentType);
+    }
+  }
+
+  return contentTypesByVideoId;
+}
+
+async function fetchShortsPlaylistContentTypesForVideos(input: {
+  accessToken: string;
+  channelId: string;
+  videoIds: string[];
+  warnings: string[];
+}) {
+  const contentTypesByVideoId = new Map<string, VideoContentType>();
+
+  try {
+    const memberships = await fetchYouTubeShortsPlaylistMemberships({
+      accessToken: input.accessToken,
+      channelId: input.channelId,
+      videoIds: input.videoIds
+    });
+
+    for (const [videoId, isShort] of memberships) {
+      contentTypesByVideoId.set(videoId, isShort ? "short" : "long");
+    }
+  } catch (error) {
+    input.warnings.push(
+      error instanceof Error
+        ? `${input.channelId} Shorts playlist fallback skipped: ${error.message}`
+        : `${input.channelId} Shorts playlist fallback skipped.`
+    );
   }
 
   return contentTypesByVideoId;
