@@ -9,7 +9,11 @@ import {
 } from "@/lib/youtube-cms-api";
 import { ensureYoutubeAnalyticsRangeData } from "@/lib/youtube-auto-sync";
 import { listStoredYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
-import { syncYoutubeCmsAnalytics, syncYoutubeDailyVideoMetricsForVideos } from "@/lib/youtube-performance-sync";
+import {
+  syncYoutubeCmsAnalytics,
+  syncYoutubeCreatorContentTypesForVideos,
+  syncYoutubeDailyVideoMetricsForVideos
+} from "@/lib/youtube-performance-sync";
 import { normalizeReportDate } from "@/lib/youtube-performance-utils";
 
 type LoginSyncChannel = {
@@ -110,6 +114,12 @@ async function syncTodayDailyVideoMetrics(channels: LoginSyncChannel[]) {
       if (channelVideos.length === 0) return;
 
       await upsertVideoCatalog(channelVideos);
+      await syncYoutubeCreatorContentTypesForVideos({
+        channelId,
+        endDate: today,
+        startDate: today,
+        videoIds: channelVideos.map((video) => video.videoId)
+      });
       await syncYoutubeDailyVideoMetricsForVideos({
         channelId,
         date: today,

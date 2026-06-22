@@ -86,6 +86,8 @@ const VIDEO_METRIC_SETS = [
   ["views"]
 ];
 
+const CREATOR_CONTENT_TYPE_METRIC_SETS = [["views"]];
+
 type SyncInput = {
   channelId?: string;
   startDate: string;
@@ -191,10 +193,20 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
       videoMetadataById.set(video.videoId, video);
     }
 
+    const creatorContentTypeByVideoId = await fetchCreatorContentTypesForVideos({
+      accessToken,
+      channelId: input.channelId,
+      config: selectedConfig,
+      endDate: input.endDate,
+      startDate: getCreatorContentTypeLookupStartDate(input.startDate, Array.from(videoMetadataById.values())),
+      videoIds: Array.from(videoMetadataById.keys()),
+      warnings
+    });
     const analyticsContentTypeByVideoId = getAnalyticsContentTypeByVideoId(videoMetrics);
     const videoMetadata = Array.from(videoMetadataById.values()).map((video) => ({
       ...video,
-      contentType: analyticsContentTypeByVideoId.get(video.videoId) ?? video.contentType
+      contentType:
+        creatorContentTypeByVideoId.get(video.videoId) ?? analyticsContentTypeByVideoId.get(video.videoId) ?? video.contentType
     }));
     const metadataVideoIds = new Set(videoMetadataById.keys());
     const videoMetricsWithCatalog = videoMetrics.filter((row) => row.videoId && metadataVideoIds.has(row.videoId));
@@ -375,6 +387,43 @@ export async function syncYoutubeDailyVideoMetricsForVideos(input: {
 
     throw error;
   }
+}
+
+export async function syncYoutubeCreatorContentTypesForVideos(input: {
+  channelId: string;
+  endDate: string;
+  startDate: string;
+  videoIds: string[];
+}) {
+  const videoIds = unique(input.videoIds);
+  if (videoIds.length === 0) {
+    return {
+      status: "success",
+      videosUpdated: 0,
+      warnings: []
+    };
+  }
+
+  const config = getYouTubeCmsConfig();
+  const accessToken = await refreshYouTubeAccessToken(config);
+  const warnings: string[] = [];
+  const contentTypesByVideoId = await fetchCreatorContentTypesForVideos({
+    accessToken,
+    channelId: input.channelId,
+    config,
+    endDate: input.endDate,
+    startDate: getMonthStartDate(input.startDate),
+    videoIds,
+    warnings
+  });
+
+  await updateVideoCatalogContentTypes(createSupabaseAdminClient(), contentTypesByVideoId);
+
+  return {
+    status: "success",
+    videosUpdated: contentTypesByVideoId.size,
+    warnings
+  };
 }
 
 async function fetchManagedChannelsByContentOwner(accessToken: string, contentOwnerIds: string[]) {
@@ -773,6 +822,53 @@ async function fetchDailyVideoMetricsForVideos(input: {
   return metrics;
 }
 
+async function fetchCreatorContentTypesForVideos(input: {
+  accessToken: string;
+  channelId: string;
+  config: ReturnType<typeof getYouTubeCmsConfig>;
+  endDate: string;
+  startDate: string;
+  videoIds: string[];
+  warnings: string[];
+}) {
+  const contentTypesByVideoId = new Map<string, VideoContentType>();
+
+  for (const ids of chunk(unique(input.videoIds), 100)) {
+    if (ids.length === 0) continue;
+
+    for (const contentOwnerId of input.config.contentOwnerIds) {
+      const report = await fetchOptionalReport(
+        () =>
+          fetchAnalyticsReportWithFallback({
+            accessToken: input.accessToken,
+            config: withYouTubeContentOwner(input.config, contentOwnerId),
+            startDate: input.startDate,
+            endDate: input.endDate,
+            dimensions: ["video", "creatorContentType"],
+            metricSets: CREATOR_CONTENT_TYPE_METRIC_SETS,
+            filters: `channel==${input.channelId};video==${ids.join(",")}`,
+            maxResults: ids.length,
+            paginate: false
+          }),
+        `${input.channelId} creatorContentType ${input.startDate} to ${input.endDate}`,
+        input.warnings
+      );
+
+      for (const row of rowsFromReport(["video", "creatorContentType"], report, {
+        defaultDay: input.startDate,
+        channelId: input.channelId
+      })) {
+        if (!row.videoId || !row.contentType || row.contentType === "unknown") continue;
+        contentTypesByVideoId.set(row.videoId, row.contentType);
+      }
+
+      if (ids.every((videoId) => contentTypesByVideoId.has(videoId))) break;
+    }
+  }
+
+  return contentTypesByVideoId;
+}
+
 async function fetchVideoIdReports(input: {
   accessToken: string;
   config: ReturnType<typeof getYouTubeCmsConfig>;
@@ -944,6 +1040,22 @@ function getAnalyticsContentTypeByVideoId(metrics: DailyMetricAccumulator[]) {
   return contentTypeByVideoId;
 }
 
+function getCreatorContentTypeLookupStartDate(fallbackStartDate: string, videos: YouTubeVideoMetadata[]) {
+  const publishedDates = videos
+    .map((video) => video.publishedAt?.slice(0, 10) ?? "")
+    .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value));
+  const earliestDate = publishedDates.reduce(
+    (earliest, value) => (value < earliest ? value : earliest),
+    fallbackStartDate
+  );
+
+  return getMonthStartDate(earliestDate);
+}
+
+function getMonthStartDate(date: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(0, 7)}-01` : date;
+}
+
 async function upsertVideoCatalog(
   supabase: ReturnType<typeof createSupabaseAdminClient>,
   metadata: YouTubeVideoMetadata[]
@@ -966,6 +1078,25 @@ async function upsertVideoCatalog(
     }));
 
   await upsertInChunks(supabase, "youtube_video_catalog", rows, "video_id");
+}
+
+async function updateVideoCatalogContentTypes(
+  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  contentTypesByVideoId: Map<string, VideoContentType>
+) {
+  const updatedAt = new Date().toISOString();
+
+  for (const [videoId, contentType] of contentTypesByVideoId) {
+    const { error } = await supabase
+      .from("youtube_video_catalog")
+      .update({
+        content_type: contentType,
+        updated_at: updatedAt
+      })
+      .eq("video_id", videoId);
+
+    if (error) throw error;
+  }
 }
 
 async function upsertContentTypeMetrics(

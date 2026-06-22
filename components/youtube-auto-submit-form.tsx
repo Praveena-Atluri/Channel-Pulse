@@ -37,7 +37,7 @@ export function YoutubeAutoSubmitForm({ action, children, className }: YoutubeAu
   }, [isSubmitting]);
 
   const handleChange = (event: ChangeEvent<HTMLFormElement>) => {
-    if (!(event.target instanceof HTMLSelectElement)) return;
+    if (!isAutoSubmitControl(event.target)) return;
 
     const form = event.currentTarget;
     if (!form.reportValidity()) return;
@@ -68,6 +68,11 @@ export function YoutubeAutoSubmitForm({ action, children, className }: YoutubeAu
       {children}
     </form>
   );
+}
+
+function isAutoSubmitControl(target: EventTarget) {
+  if (target instanceof HTMLSelectElement) return true;
+  return target instanceof HTMLInputElement && target.type === "date";
 }
 
 function publishFilterLoading(loading: boolean) {

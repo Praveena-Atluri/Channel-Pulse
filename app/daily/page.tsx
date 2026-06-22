@@ -7,6 +7,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { YoutubeAutoSubmitForm } from "@/components/youtube-auto-submit-form";
 import { canAccountViewRevenue } from "@/lib/auth";
 import {
   getDailyMetricsDashboardData,
@@ -22,7 +23,10 @@ import {
 import { requireCurrentAccount } from "@/lib/server-auth";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import { listStoredYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
-import { syncYoutubeDailyVideoMetricsForVideos } from "@/lib/youtube-performance-sync";
+import {
+  syncYoutubeCreatorContentTypesForVideos,
+  syncYoutubeDailyVideoMetricsForVideos
+} from "@/lib/youtube-performance-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +61,12 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
 
   if (isYouTubeCmsConfigured()) {
     try {
+      const rowsNeedingContentTypeSync = dashboard.rows.filter((row) => row.contentType === "unknown");
+      if (rowsNeedingContentTypeSync.length > 0) {
+        await syncMissingDailyVideoContentTypes(rowsNeedingContentTypeSync, date, maxDate);
+        dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
+      }
+
       const rowsNeedingDailyMetricSync = dashboard.rows.filter(
         (row) => !row.hasDailyMetrics || shouldRefreshPendingRevenue(row, shouldMarkRevenuePending)
       );
@@ -115,7 +125,7 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <form action="/daily" className="grid gap-3 md:grid-cols-[1fr_1fr_auto]" method="get">
+            <YoutubeAutoSubmitForm action="/daily" className="grid gap-3 md:grid-cols-2">
               <label className="grid gap-1 text-sm font-semibold text-muted-foreground">
                 Date
                 <input
@@ -141,10 +151,7 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
                   ))}
                 </select>
               </label>
-              <button className={buttonVariants({ className: "h-11 self-end rounded-md" })} type="submit">
-                Apply
-              </button>
-            </form>
+            </YoutubeAutoSubmitForm>
             {showFreshnessNote ? (
               <div className="mt-3 rounded-md border border-amber-400/60 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-950 dark:bg-amber-500/10 dark:text-amber-100">
                 Views and revenue for recent dates may change because YouTube can take up to 4 days to finalize metrics.
@@ -166,6 +173,9 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
             valueClassName={getPublishingTargetClass(dashboard.totals.shortVideosPublished, publishingTargets.shortVideos)}
             helper={publishingTargets.shortVideos === null ? undefined : "Published / target"}
           />
+          {dashboard.totals.unclassifiedVideosPublished > 0 ? (
+            <SummaryCard label="Unclassified videos" value={formatCompactNumber(dashboard.totals.unclassifiedVideosPublished)} />
+          ) : null}
           <SummaryCard label="Same-day views" value={formatNullableNumber(dashboard.totals.views)} />
           {canViewRevenue ? (
             <SummaryCard
@@ -199,7 +209,7 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
               </div>
             ) : (
               <div className="rounded-md border bg-muted/30 p-4 text-sm font-semibold text-muted-foreground">
-                No long or short videos are stored as published on this date for the selected channel filter.
+                No videos are stored as published on this date for the selected channel filter.
               </div>
             )}
           </CardContent>
@@ -219,6 +229,19 @@ async function syncMissingDailyVideoMetrics(rows: DailyMetricsVideoRow[], date: 
 
   for (const [channelId, videoIds] of videoIdsByChannelId) {
     await syncYoutubeDailyVideoMetricsForVideos({ channelId, date, videoIds });
+  }
+}
+
+async function syncMissingDailyVideoContentTypes(rows: DailyMetricsVideoRow[], startDate: string, endDate: string) {
+  const videoIdsByChannelId = new Map<string, string[]>();
+  for (const row of rows) {
+    const videoIds = videoIdsByChannelId.get(row.channelId) ?? [];
+    videoIds.push(row.videoId);
+    videoIdsByChannelId.set(row.channelId, videoIds);
+  }
+
+  for (const [channelId, videoIds] of videoIdsByChannelId) {
+    await syncYoutubeCreatorContentTypesForVideos({ channelId, endDate, startDate, videoIds });
   }
 }
 

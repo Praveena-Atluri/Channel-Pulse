@@ -5,7 +5,7 @@ import type { VideoContentType } from "@/lib/youtube-performance-utils";
 export type DailyMetricsVideoRow = {
   channelId: string;
   channelTitle: string;
-  contentType: "long" | "short";
+  contentType: VideoContentType;
   estimatedRevenue: number | null;
   hasDailyMetrics: boolean;
   publishedAt: string | null;
@@ -23,6 +23,7 @@ export type DailyMetricsDashboardData = {
     estimatedRevenue: number | null;
     longVideosPublished: number;
     shortVideosPublished: number;
+    unclassifiedVideosPublished: number;
     videosWithDailyMetrics: number;
     views: number | null;
   };
@@ -83,20 +84,16 @@ export async function getDailyMetricsDashboardData({
     channelId === "all" ? channels.map((channel) => channel.channelId) : channels.some((channel) => channel.channelId === channelId) ? [channelId] : [];
   const channelTitleById = new Map(channels.map((channel) => [channel.channelId, channel.title]));
   const catalogRows = selectedChannelIds.length > 0 ? await getPublishedVideoCatalogRows(selectedChannelIds, date) : [];
-  const visibleCatalogRows = catalogRows.filter(
-    (row): row is DailyVideoCatalogRow & { content_type: "long" | "short" } =>
-      row.content_type === "long" || row.content_type === "short"
-  );
-  const metricRows = await getDailyVideoMetricRows(visibleCatalogRows.map((row) => row.video_id), date);
+  const metricRows = await getDailyVideoMetricRows(catalogRows.map((row) => row.video_id), date);
   const metricByVideoId = new Map(metricRows.map((row) => [row.video_id, row]));
-  const rows = visibleCatalogRows
+  const rows = catalogRows
     .map((row) => {
       const metric = metricByVideoId.get(row.video_id);
 
       return {
         channelId: row.channel_id,
         channelTitle: channelTitleById.get(row.channel_id) ?? row.channel_id,
-        contentType: row.content_type,
+        contentType: row.content_type ?? "unknown",
         estimatedRevenue: metric ? toNumber(metric.estimated_revenue) : null,
         hasDailyMetrics: Boolean(metric),
         publishedAt: row.published_at,
@@ -122,6 +119,7 @@ export async function getDailyMetricsDashboardData({
           : null,
       longVideosPublished: rows.filter((row) => row.contentType === "long").length,
       shortVideosPublished: rows.filter((row) => row.contentType === "short").length,
+      unclassifiedVideosPublished: rows.filter((row) => row.contentType !== "long" && row.contentType !== "short").length,
       videosWithDailyMetrics: rowsWithDailyMetrics.length,
       views: rowsWithDailyMetrics.length > 0 ? rowsWithDailyMetrics.reduce((total, row) => total + (row.views ?? 0), 0) : null
     }

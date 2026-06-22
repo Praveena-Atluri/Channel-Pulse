@@ -1,4 +1,4 @@
-import { createClient, type Client, type InValue, type Row } from "@libsql/client/web";
+import { createClient, type Client, type InValue, type Row } from "@libsql/client/http";
 
 type QueryResult<T = unknown> = {
   data: T | null;
@@ -24,6 +24,7 @@ type OrderClause = {
 type QueryMode = "select" | "insert" | "update" | "upsert";
 
 const IDENTIFIER_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const TRANSIENT_QUERY_ATTEMPTS = 3;
 
 let cachedClient: Client | null = null;
 let cachedClientKey = "";
@@ -177,7 +178,7 @@ class TursoQueryBuilder implements PromiseLike<QueryResult> {
 
   private async executeSelect() {
     const { sql, args } = this.buildSelectQuery();
-    const result = await this.client.execute({ sql, args });
+    const result = await executeWithTransientRetry(() => this.client.execute({ sql, args }));
     return result.rows;
   }
 
@@ -189,10 +190,10 @@ class TursoQueryBuilder implements PromiseLike<QueryResult> {
     const args: InValue[] = [];
     const valuesSql = buildValuesSql(rows, columns, args);
     const returning = this.shouldReturnRows ? ` returning ${buildSelectList(this.columns)}` : "";
-    const result = await this.client.execute({
+    const result = await executeWithTransientRetry(() => this.client.execute({
       args,
       sql: `insert into ${quoteIdentifier(this.table)} (${columns.map(quoteIdentifier).join(", ")}) values ${valuesSql}${returning}`
-    });
+    }));
 
     return result.rows;
   }
@@ -211,10 +212,10 @@ class TursoQueryBuilder implements PromiseLike<QueryResult> {
 
     const where = this.buildWhereClause(args);
     const returning = this.shouldReturnRows ? ` returning ${buildSelectList(this.columns)}` : "";
-    const result = await this.client.execute({
+    const result = await executeWithTransientRetry(() => this.client.execute({
       args,
       sql: `update ${quoteIdentifier(this.table)} set ${assignments.join(", ")}${where}${returning}`
-    });
+    }));
 
     return result.rows;
   }
@@ -238,12 +239,12 @@ class TursoQueryBuilder implements PromiseLike<QueryResult> {
             .join(", ")}`
         : "do nothing";
     const returning = this.shouldReturnRows ? ` returning ${buildSelectList(this.columns)}` : "";
-    const result = await this.client.execute({
+    const result = await executeWithTransientRetry(() => this.client.execute({
       args,
       sql: `insert into ${quoteIdentifier(this.table)} (${columns
         .map(quoteIdentifier)
         .join(", ")}) values ${valuesSql} on conflict (${conflictSql}) ${updateSql}${returning}`
-    });
+    }));
 
     return result.rows;
   }
@@ -307,6 +308,57 @@ class TursoQueryBuilder implements PromiseLike<QueryResult> {
 
     return plainRows;
   }
+}
+
+async function executeWithTransientRetry<T>(callback: () => Promise<T>) {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= TRANSIENT_QUERY_ATTEMPTS; attempt += 1) {
+    try {
+      return await callback();
+    } catch (error) {
+      lastError = error;
+      if (attempt === TRANSIENT_QUERY_ATTEMPTS || !isTransientQueryError(error)) {
+        throw error;
+      }
+
+      await sleep(150 * attempt * attempt);
+    }
+  }
+
+  throw lastError;
+}
+
+function isTransientQueryError(error: unknown) {
+  const messages = getErrorMessages(error).join(" ").toLowerCase();
+  const codes = getErrorCodes(error);
+
+  return (
+    messages.includes("fetch failed") ||
+    messages.includes("other side closed") ||
+    codes.some((code) =>
+      ["ECONNRESET", "ETIMEDOUT", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT"].includes(code)
+    )
+  );
+}
+
+function getErrorMessages(error: unknown): string[] {
+  if (!(error instanceof Error)) return [String(error)];
+  return [error.message, ...getErrorMessages(error.cause)].filter(Boolean);
+}
+
+function getErrorCodes(error: unknown): string[] {
+  if (typeof error !== "object" || error === null) return [];
+
+  const code = "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  const cause = "cause" in error ? (error as { cause?: unknown }).cause : undefined;
+  return [code, ...getErrorCodes(cause)].filter(Boolean);
+}
+
+function sleep(milliseconds: number) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
 }
 
 function normalizeRows(payload: Record<string, unknown> | Array<Record<string, unknown>> | null) {
