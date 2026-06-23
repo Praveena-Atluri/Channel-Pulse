@@ -24,6 +24,7 @@ import { requireCurrentAccount } from "@/lib/server-auth";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import { listStoredYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
 import { syncYoutubeCreatorContentTypesForVideos } from "@/lib/youtube-performance-sync";
+import { syncYoutubePublishedVideosForDate } from "@/lib/youtube-published-video-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -47,22 +48,33 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
     requestedChannelId === "all" || channels.some((channel) => channel.channelId === requestedChannelId)
       ? requestedChannelId
       : "all";
-  let dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
   let syncMessage = "";
+  const targetChannels = channelId === "all" ? channels : channels.filter((channel) => channel.channelId === channelId);
 
   if (isYouTubeCmsConfigured()) {
     try {
-      const rowsNeedingContentTypeSync = dashboard.rows.filter((row) => row.contentType === "unknown");
-      if (rowsNeedingContentTypeSync.length > 0) {
-        await syncMissingDailyVideoContentTypes(rowsNeedingContentTypeSync, date, maxDate);
-        dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
+      const syncResult = await syncYoutubePublishedVideosForDate({ channels: targetChannels, date });
+      if (syncResult.warnings.length > 0) {
+        syncMessage = syncResult.warnings.join(" ");
       }
     } catch (error) {
       syncMessage = getErrorMessage(error);
     }
   }
-  const targetChannels =
-    dashboard.channelId === "all" ? channels : channels.filter((channel) => channel.channelId === dashboard.channelId);
+
+  let dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
+
+  if (isYouTubeCmsConfigured()) {
+    try {
+      const rowsNeedingContentTypeSync = dashboard.rows.filter((row) => row.contentType === "unknown");
+      if (rowsNeedingContentTypeSync.length > 0) {
+        await syncMissingDailyVideoContentTypes(rowsNeedingContentTypeSync, date);
+        dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
+      }
+    } catch (error) {
+      syncMessage = syncMessage ? `${syncMessage} ${getErrorMessage(error)}` : getErrorMessage(error);
+    }
+  }
   const dailyTargets = await getDailyPublishingTargetDashboardDataSafe({
     actualRows: dashboard.rows,
     channels: targetChannels
@@ -195,7 +207,8 @@ function DailyPublishingLoadingPanel() {
   );
 }
 
-async function syncMissingDailyVideoContentTypes(rows: DailyMetricsVideoRow[], startDate: string, endDate: string) {
+async function syncMissingDailyVideoContentTypes(rows: DailyMetricsVideoRow[], date: string) {
+  const startDate = addDays(date, -1);
   const videoIdsByChannelId = new Map<string, string[]>();
   for (const row of rows) {
     const videoIds = videoIdsByChannelId.get(row.channelId) ?? [];
@@ -204,7 +217,7 @@ async function syncMissingDailyVideoContentTypes(rows: DailyMetricsVideoRow[], s
   }
 
   for (const [channelId, videoIds] of videoIdsByChannelId) {
-    await syncYoutubeCreatorContentTypesForVideos({ channelId, endDate, startDate, videoIds });
+    await syncYoutubeCreatorContentTypesForVideos({ channelId, endDate: date, startDate, videoIds });
   }
 }
 
@@ -325,6 +338,7 @@ function formatDateLabel(value: string) {
   return new Intl.DateTimeFormat("en-IN", {
     day: "numeric",
     month: "short",
+    timeZone: "Asia/Kolkata",
     year: "numeric"
   }).format(date);
 }
@@ -339,6 +353,8 @@ function formatDateTimeLabel(value: string | null) {
     hour: "2-digit",
     minute: "2-digit",
     month: "short",
+    timeZone: "Asia/Kolkata",
+    timeZoneName: "short",
     year: "numeric"
   }).format(date);
 }
@@ -373,6 +389,14 @@ function getPublishingTargetTotals(rows: DailyPublishingTargetDashboardRow[]) {
     shortVideos:
       selectedChannelCount > 0 && totals.shortTargetCount === selectedChannelCount ? totals.shortVideos : null
   };
+}
+
+function addDays(value: string, days: number) {
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return value;
+
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function getErrorMessage(error: unknown) {

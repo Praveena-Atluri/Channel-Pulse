@@ -33,16 +33,15 @@ type DailyVideoCatalogRow = {
 };
 
 const PAGE_SIZE = 1000;
+const DAILY_METRICS_TIMEZONE_OFFSET_MINUTES = 330;
+const DAY_MS = 86_400_000;
 
 export function getDefaultDailyMetricsDate(now = new Date()) {
-  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  date.setUTCDate(date.getUTCDate() - 1);
-  return date.toISOString().slice(0, 10);
+  return addDays(getDailyMetricsDateKey(now), -1);
 }
 
 export function getMaxDailyMetricsDate(now = new Date()) {
-  const date = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  return date.toISOString().slice(0, 10);
+  return getDailyMetricsDateKey(now);
 }
 
 export function normalizeDailyMetricsDate(
@@ -57,6 +56,24 @@ export function normalizeDailyMetricsDate(
     return defaultDate > maxDate ? maxDate : defaultDate;
   }
   return value > maxDate ? maxDate : value;
+}
+
+export function getDailyMetricsUtcRange(date: string) {
+  const parsedDate = parseDateKey(date);
+  if (!parsedDate) {
+    return {
+      endDateTime: `${addDays(date, 1)}T00:00:00Z`,
+      startDateTime: `${date}T00:00:00Z`
+    };
+  }
+
+  const start = new Date(parsedDate.getTime() - DAILY_METRICS_TIMEZONE_OFFSET_MINUTES * 60_000);
+  const end = new Date(start.getTime() + DAY_MS);
+
+  return {
+    endDateTime: formatUtcDateTime(end),
+    startDateTime: formatUtcDateTime(start)
+  };
 }
 
 export async function getDailyMetricsDashboardData({
@@ -103,7 +120,7 @@ export async function getDailyMetricsDashboardData({
 async function getPublishedVideoCatalogRows(channelIds: string[], date: string) {
   const supabase = createSupabaseAdminClient();
   const rows: DailyVideoCatalogRow[] = [];
-  const endDate = addDays(date, 1);
+  const { endDateTime, startDateTime } = getDailyMetricsUtcRange(date);
   let offset = 0;
 
   while (true) {
@@ -111,8 +128,8 @@ async function getPublishedVideoCatalogRows(channelIds: string[], date: string) 
       .from("youtube_video_catalog")
       .select("video_id,channel_id,title,thumbnail_url,published_at,content_type")
       .in("channel_id", channelIds)
-      .gte("published_at", `${date}T00:00:00.000Z`)
-      .lt("published_at", `${endDate}T00:00:00.000Z`)
+      .gte("published_at", startDateTime)
+      .lt("published_at", endDateTime)
       .order("published_at", { ascending: true })
       .order("video_id", { ascending: true })
       .range(offset, offset + PAGE_SIZE - 1);
@@ -124,6 +141,22 @@ async function getPublishedVideoCatalogRows(channelIds: string[], date: string) 
   }
 
   return rows;
+}
+
+function getDailyMetricsDateKey(now: Date) {
+  return new Date(now.getTime() + DAILY_METRICS_TIMEZONE_OFFSET_MINUTES * 60_000).toISOString().slice(0, 10);
+}
+
+function parseDateKey(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatUtcDateTime(value: Date) {
+  return value.toISOString().replace(".000Z", "Z");
 }
 
 function addDays(value: string, days: number) {
