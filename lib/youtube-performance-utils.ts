@@ -1,6 +1,8 @@
 export type VideoContentType = "short" | "long" | "live" | "unknown";
 export type VideoCohort = "all" | "recent" | "old";
 
+const MAX_SHORT_DURATION_SECONDS = 180;
+
 export type MetricTotals = {
   views: number;
   estimatedMinutesWatched: number;
@@ -159,7 +161,20 @@ export function classifyVideoContentType(input: {
   const analyticsType = normalizeAnalyticsContentType(input.analyticsContentType);
   if (analyticsType !== "unknown") return analyticsType;
 
+  if (typeof input.durationSeconds === "number" && input.durationSeconds > MAX_SHORT_DURATION_SECONDS) {
+    return "long";
+  }
+
   return "unknown";
+}
+
+export function resolveVideoContentType(
+  contentType: VideoContentType | null | undefined,
+  durationSeconds?: number | null
+): VideoContentType {
+  if (contentType && contentType !== "unknown") return contentType;
+
+  return classifyVideoContentType({ durationSeconds });
 }
 
 export function normalizeReportDate(date: Date) {

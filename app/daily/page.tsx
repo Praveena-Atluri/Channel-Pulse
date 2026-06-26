@@ -9,6 +9,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { YoutubeAutoSubmitForm } from "@/components/youtube-auto-submit-form";
 import { YoutubeFilterLoadingBoundary } from "@/components/youtube-filter-loading-boundary";
+import { VideoListExcelDownloadButton } from "@/components/video-list-excel-download-button";
 import {
   getDailyMetricsDashboardData,
   getDefaultDailyMetricsDate,
@@ -81,6 +82,7 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
   });
   const publishingTargets = getPublishingTargetTotals(dailyTargets.rows);
   const dashboardRenderKey = `${date}:${dashboard.channelId}`;
+  const dailyVideoDownloadRows = buildDailyVideoDownloadRows(dashboard.rows);
 
   return (
     <main className="youtube-report-page min-h-screen p-4 md:p-6">
@@ -173,7 +175,15 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
 
           <Card className="shadow-sm">
             <CardHeader>
-              <CardTitle className="text-base">Videos Published On {formatDateLabel(date)}</CardTitle>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                <CardTitle className="text-base">Videos Published On {formatDateLabel(date)}</CardTitle>
+                <VideoListExcelDownloadButton
+                  disabled={dashboard.rows.length === 0}
+                  filename={`channel-pulse-daily-videos-${date}`}
+                  rows={dailyVideoDownloadRows}
+                  sheetName="Daily Videos"
+                />
+              </div>
             </CardHeader>
             <CardContent>
               {dashboard.rows.length > 0 ? (
@@ -253,7 +263,7 @@ function DailyVideoTable({ rows }: { rows: DailyMetricsVideoRow[] }) {
                   <div className="min-w-0">
                     <a
                       className="line-clamp-2 font-bold text-foreground underline-offset-4 hover:text-primary hover:underline"
-                      href={`https://www.youtube.com/watch?v=${row.videoId}`}
+                      href={getVideoUrl(row.videoId)}
                       rel="noreferrer"
                       target="_blank"
                     >
@@ -276,6 +286,24 @@ function DailyVideoTable({ rows }: { rows: DailyMetricsVideoRow[] }) {
       </table>
     </div>
   );
+}
+
+function buildDailyVideoDownloadRows(rows: DailyMetricsVideoRow[]) {
+  return [
+    ["Video ID", "Title", "Video URL", "Channel", "Format", "Published"],
+    ...rows.map((row) => [
+      row.videoId,
+      row.title,
+      getVideoUrl(row.videoId),
+      row.channelTitle,
+      row.contentType,
+      formatDateTimeLabel(row.publishedAt)
+    ])
+  ];
+}
+
+function getVideoUrl(videoId: string) {
+  return `https://www.youtube.com/watch?v=${encodeURIComponent(videoId)}`;
 }
 
 function SummaryCard({

@@ -15,6 +15,7 @@ const ZIP_VERSION = 20;
 const DOS_TIME = 0;
 const DOS_DATE = 33;
 const CRC32_TABLE = createCrc32Table();
+const UTF8_ENCODER = new TextEncoder();
 
 export function buildXlsxWorkbook({
   columnWidth = DEFAULT_COLUMN_WIDTH,
@@ -228,68 +229,97 @@ function columnName(columnNumber: number) {
   return name;
 }
 
-function zipFiles(entries: Array<{ data: string | Buffer; path: string }>) {
-  const chunks: Buffer[] = [];
-  const centralDirectoryChunks: Buffer[] = [];
+function zipFiles(entries: Array<{ data: string | Uint8Array; path: string }>) {
+  const chunks: Uint8Array[] = [];
+  const centralDirectoryChunks: Uint8Array[] = [];
   let offset = 0;
 
   for (const entry of entries) {
-    const fileName = Buffer.from(entry.path, "utf8");
-    const data = Buffer.isBuffer(entry.data) ? entry.data : Buffer.from(entry.data, "utf8");
+    const fileName = encodeUtf8(entry.path);
+    const data = typeof entry.data === "string" ? encodeUtf8(entry.data) : entry.data;
     const checksum = crc32(data);
-    const localHeader = Buffer.alloc(30);
+    const localHeader = new Uint8Array(30);
 
-    localHeader.writeUInt32LE(0x04034b50, 0);
-    localHeader.writeUInt16LE(ZIP_VERSION, 4);
-    localHeader.writeUInt16LE(ZIP_UTF8_FLAG, 6);
-    localHeader.writeUInt16LE(ZIP_STORE_METHOD, 8);
-    localHeader.writeUInt16LE(DOS_TIME, 10);
-    localHeader.writeUInt16LE(DOS_DATE, 12);
-    localHeader.writeUInt32LE(checksum, 14);
-    localHeader.writeUInt32LE(data.length, 18);
-    localHeader.writeUInt32LE(data.length, 22);
-    localHeader.writeUInt16LE(fileName.length, 26);
-    localHeader.writeUInt16LE(0, 28);
+    writeUInt32LE(localHeader, 0x04034b50, 0);
+    writeUInt16LE(localHeader, ZIP_VERSION, 4);
+    writeUInt16LE(localHeader, ZIP_UTF8_FLAG, 6);
+    writeUInt16LE(localHeader, ZIP_STORE_METHOD, 8);
+    writeUInt16LE(localHeader, DOS_TIME, 10);
+    writeUInt16LE(localHeader, DOS_DATE, 12);
+    writeUInt32LE(localHeader, checksum, 14);
+    writeUInt32LE(localHeader, data.length, 18);
+    writeUInt32LE(localHeader, data.length, 22);
+    writeUInt16LE(localHeader, fileName.length, 26);
+    writeUInt16LE(localHeader, 0, 28);
 
     chunks.push(localHeader, fileName, data);
 
-    const centralDirectoryHeader = Buffer.alloc(46);
-    centralDirectoryHeader.writeUInt32LE(0x02014b50, 0);
-    centralDirectoryHeader.writeUInt16LE(ZIP_VERSION, 4);
-    centralDirectoryHeader.writeUInt16LE(ZIP_VERSION, 6);
-    centralDirectoryHeader.writeUInt16LE(ZIP_UTF8_FLAG, 8);
-    centralDirectoryHeader.writeUInt16LE(ZIP_STORE_METHOD, 10);
-    centralDirectoryHeader.writeUInt16LE(DOS_TIME, 12);
-    centralDirectoryHeader.writeUInt16LE(DOS_DATE, 14);
-    centralDirectoryHeader.writeUInt32LE(checksum, 16);
-    centralDirectoryHeader.writeUInt32LE(data.length, 20);
-    centralDirectoryHeader.writeUInt32LE(data.length, 24);
-    centralDirectoryHeader.writeUInt16LE(fileName.length, 28);
-    centralDirectoryHeader.writeUInt16LE(0, 30);
-    centralDirectoryHeader.writeUInt16LE(0, 32);
-    centralDirectoryHeader.writeUInt16LE(0, 34);
-    centralDirectoryHeader.writeUInt16LE(0, 36);
-    centralDirectoryHeader.writeUInt32LE(0, 38);
-    centralDirectoryHeader.writeUInt32LE(offset, 42);
+    const centralDirectoryHeader = new Uint8Array(46);
+    writeUInt32LE(centralDirectoryHeader, 0x02014b50, 0);
+    writeUInt16LE(centralDirectoryHeader, ZIP_VERSION, 4);
+    writeUInt16LE(centralDirectoryHeader, ZIP_VERSION, 6);
+    writeUInt16LE(centralDirectoryHeader, ZIP_UTF8_FLAG, 8);
+    writeUInt16LE(centralDirectoryHeader, ZIP_STORE_METHOD, 10);
+    writeUInt16LE(centralDirectoryHeader, DOS_TIME, 12);
+    writeUInt16LE(centralDirectoryHeader, DOS_DATE, 14);
+    writeUInt32LE(centralDirectoryHeader, checksum, 16);
+    writeUInt32LE(centralDirectoryHeader, data.length, 20);
+    writeUInt32LE(centralDirectoryHeader, data.length, 24);
+    writeUInt16LE(centralDirectoryHeader, fileName.length, 28);
+    writeUInt16LE(centralDirectoryHeader, 0, 30);
+    writeUInt16LE(centralDirectoryHeader, 0, 32);
+    writeUInt16LE(centralDirectoryHeader, 0, 34);
+    writeUInt16LE(centralDirectoryHeader, 0, 36);
+    writeUInt32LE(centralDirectoryHeader, 0, 38);
+    writeUInt32LE(centralDirectoryHeader, offset, 42);
 
     centralDirectoryChunks.push(centralDirectoryHeader, fileName);
     offset += localHeader.length + fileName.length + data.length;
   }
 
   const centralDirectoryOffset = offset;
-  const centralDirectory = Buffer.concat(centralDirectoryChunks);
-  const endOfCentralDirectory = Buffer.alloc(22);
+  const centralDirectory = concatBytes(centralDirectoryChunks);
+  const endOfCentralDirectory = new Uint8Array(22);
 
-  endOfCentralDirectory.writeUInt32LE(0x06054b50, 0);
-  endOfCentralDirectory.writeUInt16LE(0, 4);
-  endOfCentralDirectory.writeUInt16LE(0, 6);
-  endOfCentralDirectory.writeUInt16LE(entries.length, 8);
-  endOfCentralDirectory.writeUInt16LE(entries.length, 10);
-  endOfCentralDirectory.writeUInt32LE(centralDirectory.length, 12);
-  endOfCentralDirectory.writeUInt32LE(centralDirectoryOffset, 16);
-  endOfCentralDirectory.writeUInt16LE(0, 20);
+  writeUInt32LE(endOfCentralDirectory, 0x06054b50, 0);
+  writeUInt16LE(endOfCentralDirectory, 0, 4);
+  writeUInt16LE(endOfCentralDirectory, 0, 6);
+  writeUInt16LE(endOfCentralDirectory, entries.length, 8);
+  writeUInt16LE(endOfCentralDirectory, entries.length, 10);
+  writeUInt32LE(endOfCentralDirectory, centralDirectory.length, 12);
+  writeUInt32LE(endOfCentralDirectory, centralDirectoryOffset, 16);
+  writeUInt16LE(endOfCentralDirectory, 0, 20);
 
-  return Buffer.concat([...chunks, centralDirectory, endOfCentralDirectory]);
+  return concatBytes([...chunks, centralDirectory, endOfCentralDirectory]);
+}
+
+function encodeUtf8(value: string) {
+  return UTF8_ENCODER.encode(value);
+}
+
+function concatBytes(chunks: Uint8Array[]) {
+  const totalLength = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+
+  for (const chunk of chunks) {
+    output.set(chunk, offset);
+    offset += chunk.length;
+  }
+
+  return output;
+}
+
+function writeUInt16LE(buffer: Uint8Array, value: number, offset: number) {
+  buffer[offset] = value & 0xff;
+  buffer[offset + 1] = (value >>> 8) & 0xff;
+}
+
+function writeUInt32LE(buffer: Uint8Array, value: number, offset: number) {
+  buffer[offset] = value & 0xff;
+  buffer[offset + 1] = (value >>> 8) & 0xff;
+  buffer[offset + 2] = (value >>> 16) & 0xff;
+  buffer[offset + 3] = (value >>> 24) & 0xff;
 }
 
 function createCrc32Table() {
@@ -306,7 +336,7 @@ function createCrc32Table() {
   return table;
 }
 
-function crc32(buffer: Buffer) {
+function crc32(buffer: Uint8Array) {
   let checksum = 0xffffffff;
 
   for (const byte of buffer) {

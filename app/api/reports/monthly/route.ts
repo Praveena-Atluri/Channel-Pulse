@@ -1032,7 +1032,7 @@ function contentTypeLabel(value: ContentTypeFilter) {
   if (value === "short") return "Short form";
   if (value === "long") return "Long form";
   if (value === "live") return "Live";
-  if (value === "unknown") return "Posts / other";
+  if (value === "unknown") return "Unclassified / other";
   return "All formats";
 }
 

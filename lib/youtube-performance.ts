@@ -11,6 +11,7 @@ import {
   getPreviousMonth,
   getRecentVideoWindow,
   getVideoCohort,
+  resolveVideoContentType,
   safePercentChange,
   type MetricTotals,
   type VideoCohort,
@@ -183,6 +184,7 @@ type VideoCatalogRow = {
   thumbnail_url: string | null;
   published_at: string | null;
   content_type: VideoContentType | null;
+  duration_seconds: number | string | null;
 };
 
 type ContentTypeMetricRow = {
@@ -820,7 +822,7 @@ async function getCatalogRows(
 
     const { data, error } = await supabase
       .from("youtube_video_catalog")
-      .select("video_id,channel_id,title,thumbnail_url,published_at,content_type")
+      .select("video_id,channel_id,title,thumbnail_url,published_at,content_type,duration_seconds")
       .in("video_id", ids);
 
     if (error) throw error;
@@ -878,7 +880,7 @@ async function getRecentCatalogVideos(
   while (true) {
     let query = supabase
       .from("youtube_video_catalog")
-      .select("video_id,channel_id,title,thumbnail_url,published_at,content_type")
+      .select("video_id,channel_id,title,thumbnail_url,published_at,content_type,duration_seconds")
       .gte("published_at", `${startDate}T00:00:00.000Z`)
       .lt("published_at", `${endDate}T00:00:00.000Z`)
       .order("published_at", { ascending: true })
@@ -915,7 +917,7 @@ function createVideoPerformanceRow(
     title: catalog?.title ?? videoId,
     thumbnailUrl: catalog?.thumbnail_url ?? null,
     publishedAt: catalog?.published_at ?? null,
-    contentType: catalog?.content_type ?? "unknown",
+    contentType: resolveVideoContentType(catalog?.content_type, toNumber(catalog?.duration_seconds)),
     cohort: getVideoCohort(catalog?.published_at ?? null, selectedMonth)
   };
 }
