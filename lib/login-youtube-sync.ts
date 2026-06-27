@@ -64,6 +64,7 @@ export async function runLoginYoutubeSync(_account: ChannelPulseAccount) {
 
   const syncPromise = (async () => {
     await markLoginSyncStarted(db, syncScope, channelIds);
+    await syncRecentPublishedVideos(channels);
     await ensureYoutubeAnalyticsRangeData({
       channels,
       endDate,
@@ -71,7 +72,6 @@ export async function runLoginYoutubeSync(_account: ChannelPulseAccount) {
       startDate,
       storePeriodBreakdowns: true
     });
-    await syncRecentPublishedVideos(channels);
     await markLoginSyncSuccess(db, syncScope, channelIds);
   })()
     .then(() => undefined)
