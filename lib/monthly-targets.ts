@@ -11,7 +11,7 @@ import {
   type MonthlyTargetMetric,
   type MonthlyTargetValues
 } from "@/lib/monthly-target-metrics";
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import { getMonthDateRange, type VideoContentType } from "@/lib/youtube-performance-utils";
 
 export type MonthlyTargetDashboardRow = {
@@ -155,11 +155,11 @@ export async function resolveMonthlyTargetBaselineMonth({
 
   if (channelIds.length === 0) return fallbackMonth;
 
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const cutoffDate = `${getTargetBaselineCutoffMonth(month)}-01`;
   const [latestChannelDay, latestContentTypeDay] = await Promise.all([
-    getLatestMetricDay(supabase, "youtube_channel_daily_metrics", cutoffDate, channelIds),
-    getLatestMetricDay(supabase, "youtube_content_type_daily_metrics", cutoffDate, channelIds)
+    getLatestMetricDay(db, "youtube_channel_daily_metrics", cutoffDate, channelIds),
+    getLatestMetricDay(db, "youtube_content_type_daily_metrics", cutoffDate, channelIds)
   ]);
   const latestDay = [latestChannelDay, latestContentTypeDay].filter(Boolean).sort().at(-1);
 
@@ -175,9 +175,9 @@ export async function saveMonthlyTargets({
   rows: SaveMonthlyTargetInputRow[];
   username: string;
 }) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const channelIds = rows.map((row) => row.channelId);
-  const existingRows = await getTargetDbRows(supabase, month, channelIds);
+  const existingRows = await getTargetDbRows(db, month, channelIds);
   const existingRowsByChannelId = new Map(existingRows.map((row) => [row.channel_id, row]));
   const savedAt = new Date().toISOString();
   const payload = rows.map((row) => {
@@ -201,7 +201,7 @@ export async function saveMonthlyTargets({
 
   if (payload.length === 0) return;
 
-  const { error } = await supabase
+  const { error } = await db
     .from("youtube_monthly_channel_targets")
     .upsert(payload, { onConflict: "month,channel_id" });
 
@@ -240,15 +240,15 @@ async function getMonthlyTargetRows({
   channels: TargetChannel[];
   month: string;
 }) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const channelIds = channels.map((channel) => channel.channelId);
 
   if (channelIds.length === 0) return [];
 
   const [targetRows, actualBuckets, baselineBuckets] = await Promise.all([
-    getTargetDbRows(supabase, month, channelIds),
-    getActualBuckets(supabase, month, channelIds),
-    getActualBuckets(supabase, baselineMonth, channelIds)
+    getTargetDbRows(db, month, channelIds),
+    getActualBuckets(db, month, channelIds),
+    getActualBuckets(db, baselineMonth, channelIds)
   ]);
   const targetRowsByChannelId = new Map(targetRows.map((row) => [row.channel_id, row]));
 
@@ -270,11 +270,11 @@ async function getMonthlyTargetRows({
 }
 
 async function getTargetDbRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   month: string,
   channelIds: string[]
 ) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("youtube_monthly_channel_targets")
     .select(TARGET_SELECT_COLUMNS)
     .eq("month", month)
@@ -286,16 +286,16 @@ async function getTargetDbRows(
 }
 
 async function getActualBuckets(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   month: string,
   channelIds: string[]
 ) {
   const range = getMonthDateRange(month);
   const buckets = new Map(channelIds.map((channelId) => [channelId, createActualBucket()]));
   const [channelMetricRows, contentTypeMetricRows, publishedVideoRows] = await Promise.all([
-    getChannelMetricRows(supabase, range.startDate, range.endDate, channelIds),
-    getContentTypeMetricRows(supabase, range.startDate, range.endDate, channelIds),
-    getPublishedVideoRows(supabase, range.startDate, range.endDate, channelIds)
+    getChannelMetricRows(db, range.startDate, range.endDate, channelIds),
+    getContentTypeMetricRows(db, range.startDate, range.endDate, channelIds),
+    getPublishedVideoRows(db, range.startDate, range.endDate, channelIds)
   ]);
 
   for (const row of channelMetricRows) {
@@ -338,12 +338,12 @@ async function getActualBuckets(
 }
 
 async function getChannelMetricRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   channelIds: string[]
 ) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("youtube_channel_daily_metrics")
     .select("channel_id,estimated_minutes_watched,subscribers_gained,subscribers_lost")
     .in("channel_id", channelIds)
@@ -356,12 +356,12 @@ async function getChannelMetricRows(
 }
 
 async function getContentTypeMetricRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   channelIds: string[]
 ) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("youtube_content_type_daily_metrics")
     .select("channel_id,content_type,views")
     .in("channel_id", channelIds)
@@ -374,12 +374,12 @@ async function getContentTypeMetricRows(
 }
 
 async function getPublishedVideoRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   channelIds: string[]
 ) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from("youtube_video_catalog")
     .select("channel_id,content_type")
     .in("channel_id", channelIds)
@@ -392,12 +392,12 @@ async function getPublishedVideoRows(
 }
 
 async function getLatestMetricDay(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   table: "youtube_channel_daily_metrics" | "youtube_content_type_daily_metrics",
   cutoffDate: string,
   channelIds: string[]
 ) {
-  const { data, error } = await supabase
+  const { data, error } = await db
     .from(table)
     .select("day")
     .in("channel_id", channelIds)

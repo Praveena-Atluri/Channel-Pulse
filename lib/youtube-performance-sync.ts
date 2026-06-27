@@ -1,4 +1,4 @@
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import { upsertYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
 import {
   fetchAnalyticsReportWithFallback,
@@ -116,11 +116,11 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
     throw new Error("Select one channel before running YouTube sync.");
   }
 
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const startedAt = new Date().toISOString();
   let syncRun: SyncRunRecord | null = null;
 
-  const syncInsert = await supabase
+  const syncInsert = await db
     .from("youtube_analytics_sync_runs")
     .insert({
       sync_type: input.syncType ?? "daily",
@@ -160,7 +160,7 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
     const videoMetrics: DailyMetricAccumulator[] = [];
     const videoMetadataById = new Map<string, YouTubeVideoMetadata>();
 
-    await upsertYoutubeManagedChannels(supabase, allChannelMetadata);
+    await upsertYoutubeManagedChannels(db, allChannelMetadata);
 
     if (input.channelId && input.channelId !== "all" && channelIds.length === 0) {
       throw new Error("Selected channel was not found in this CMS account.");
@@ -224,13 +224,13 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
       );
     }
 
-    await upsertChannelMetrics(supabase, channelMetrics);
-    await upsertVideoCatalog(supabase, videoMetadata);
-    await upsertVideoMetrics(supabase, videoMetricsWithCatalog);
-    await upsertContentTypeMetrics(supabase, contentTypeMetrics);
+    await upsertChannelMetrics(db, channelMetrics);
+    await upsertVideoCatalog(db, videoMetadata);
+    await upsertVideoMetrics(db, videoMetricsWithCatalog);
+    await upsertContentTypeMetrics(db, contentTypeMetrics);
     let countryMetricRowsSynced = countryMetrics.length;
     try {
-      await upsertCountryMetrics(supabase, countryMetrics);
+      await upsertCountryMetrics(db, countryMetrics);
     } catch (error) {
       countryMetricRowsSynced = 0;
       warnings.push(
@@ -243,7 +243,7 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
     const finishedAt = new Date().toISOString();
     const metricsRowsSynced =
       channelMetrics.length + videoMetricsWithCatalog.length + contentTypeMetrics.length + countryMetricRowsSynced;
-    const update = await supabase
+    const update = await db
       .from("youtube_analytics_sync_runs")
       .update({
         status: "success",
@@ -272,7 +272,7 @@ export async function syncYoutubeCmsAnalytics(input: SyncInput) {
     const message = getErrorMessage(error);
 
     if (syncRun) {
-      await supabase
+      await db
         .from("youtube_analytics_sync_runs")
         .update({
           status: "failed",
@@ -317,7 +317,7 @@ export async function syncYoutubeCreatorContentTypesForVideos(input: {
     warnings
   });
 
-  await updateVideoCatalogContentTypes(createSupabaseAdminClient(), contentTypesByVideoId);
+  await updateVideoCatalogContentTypes(createDatabaseAdminClient(), contentTypesByVideoId);
 
   return {
     status: "success",
@@ -854,7 +854,7 @@ async function fetchVideoAnalyticsReportWithContentTypeFallback(input: {
 }
 
 async function upsertChannelMetrics(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   metrics: DailyMetricAccumulator[]
 ) {
   const updatedAt = new Date().toISOString();
@@ -889,13 +889,13 @@ async function upsertChannelMetrics(
       updated_at: updatedAt
     }));
 
-  await upsertInChunks(supabase, "youtube_channel_daily_metrics", coreRows, "day,channel_id");
-  await upsertInChunks(supabase, "youtube_channel_daily_metrics", revenueRows, "day,channel_id");
-  await upsertInChunks(supabase, "youtube_channel_daily_metrics", ctrRows, "day,channel_id");
+  await upsertInChunks(db, "youtube_channel_daily_metrics", coreRows, "day,channel_id");
+  await upsertInChunks(db, "youtube_channel_daily_metrics", revenueRows, "day,channel_id");
+  await upsertInChunks(db, "youtube_channel_daily_metrics", ctrRows, "day,channel_id");
 }
 
 async function upsertVideoMetrics(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   metrics: DailyMetricAccumulator[]
 ) {
   const updatedAt = new Date().toISOString();
@@ -926,22 +926,22 @@ async function upsertVideoMetrics(
     }));
 
   if (revenueRows.length > 0) {
-    await deleteVideoMetricsForDays(supabase, revenueRows);
+    await deleteVideoMetricsForDays(db, revenueRows);
   }
 
-  await upsertInChunks(supabase, "youtube_video_daily_metrics", coreRows, "day,video_id");
-  await upsertInChunks(supabase, "youtube_video_daily_metrics", revenueRows, "day,video_id");
+  await upsertInChunks(db, "youtube_video_daily_metrics", coreRows, "day,video_id");
+  await upsertInChunks(db, "youtube_video_daily_metrics", revenueRows, "day,video_id");
 }
 
 async function deleteVideoMetricsForDays(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   rows: Array<{ channel_id: string; day: string }>
 ) {
   const dayKeys = unique(rows.map((row) => `${row.channel_id}|${row.day}`));
 
   for (const key of dayKeys) {
     const [channelId, day] = key.split("|");
-    const { error } = await supabase
+    const { error } = await db
       .from("youtube_video_daily_metrics")
       .delete()
       .eq("channel_id", channelId)
@@ -994,7 +994,7 @@ function getMonthStartDate(date: string) {
 }
 
 async function upsertVideoCatalog(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   metadata: YouTubeVideoMetadata[]
 ) {
   const now = new Date().toISOString();
@@ -1009,22 +1009,23 @@ async function upsertVideoCatalog(
       published_at: video.publishedAt,
       duration_seconds: video.durationSeconds,
       content_type: video.contentType,
+      privacy_status: video.privacyStatus,
       view_count: video.viewCount,
       last_synced_at: now,
       updated_at: now
     }));
 
-  await upsertInChunks(supabase, "youtube_video_catalog", rows, "video_id");
+  await upsertInChunks(db, "youtube_video_catalog", rows, "video_id");
 }
 
 async function updateVideoCatalogContentTypes(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   contentTypesByVideoId: Map<string, VideoContentType>
 ) {
   const updatedAt = new Date().toISOString();
 
   for (const [videoId, contentType] of contentTypesByVideoId) {
-    const { error } = await supabase
+    const { error } = await db
       .from("youtube_video_catalog")
       .update({
         content_type: contentType,
@@ -1037,7 +1038,7 @@ async function updateVideoCatalogContentTypes(
 }
 
 async function upsertContentTypeMetrics(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   metrics: DailyMetricAccumulator[]
 ) {
   const updatedAt = new Date().toISOString();
@@ -1060,12 +1061,12 @@ async function upsertContentTypeMetrics(
     updated_at: updatedAt
   }));
 
-  await upsertInChunks(supabase, "youtube_content_type_daily_metrics", coreRows, "day,channel_id,content_type");
-  await upsertInChunks(supabase, "youtube_content_type_daily_metrics", revenueRows, "day,channel_id,content_type");
+  await upsertInChunks(db, "youtube_content_type_daily_metrics", coreRows, "day,channel_id,content_type");
+  await upsertInChunks(db, "youtube_content_type_daily_metrics", revenueRows, "day,channel_id,content_type");
 }
 
 async function upsertCountryMetrics(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   metrics: DailyMetricAccumulator[]
 ) {
   const updatedAt = new Date().toISOString();
@@ -1096,22 +1097,22 @@ async function upsertCountryMetrics(
     }));
 
   if (revenueRows.length > 0) {
-    await deleteCountryMetricsForDays(supabase, revenueRows);
+    await deleteCountryMetricsForDays(db, revenueRows);
   }
 
-  await upsertInChunks(supabase, "youtube_country_daily_metrics", coreRows, "day,channel_id,country_code");
-  await upsertInChunks(supabase, "youtube_country_daily_metrics", revenueRows, "day,channel_id,country_code");
+  await upsertInChunks(db, "youtube_country_daily_metrics", coreRows, "day,channel_id,country_code");
+  await upsertInChunks(db, "youtube_country_daily_metrics", revenueRows, "day,channel_id,country_code");
 }
 
 async function deleteCountryMetricsForDays(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   rows: Array<{ channel_id: string; day: string }>
 ) {
   const dayKeys = unique(rows.map((row) => `${row.channel_id}|${row.day}`));
 
   for (const key of dayKeys) {
     const [channelId, day] = key.split("|");
-    const { error } = await supabase
+    const { error } = await db
       .from("youtube_country_daily_metrics")
       .delete()
       .eq("channel_id", channelId)
@@ -1122,7 +1123,7 @@ async function deleteCountryMetricsForDays(
 }
 
 async function upsertInChunks(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   table: string,
   rows: Array<Record<string, unknown>>,
   onConflict: string
@@ -1130,7 +1131,7 @@ async function upsertInChunks(
   for (const rowsChunk of chunk(dedupeRowsByConflictKey(rows, onConflict), 500)) {
     if (rowsChunk.length === 0) continue;
 
-    const { error } = await supabase.from(table).upsert(rowsChunk, { onConflict });
+    const { error } = await db.from(table).upsert(rowsChunk, { onConflict });
     if (error) throw error;
   }
 }

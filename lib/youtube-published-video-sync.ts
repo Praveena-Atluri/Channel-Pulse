@@ -1,4 +1,4 @@
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import { getDailyMetricsUtcRange } from "@/lib/daily-metrics";
 import {
   fetchChannelVideosPublishedBetween,
@@ -216,7 +216,7 @@ function isPublishedInsideRange(
 }
 
 async function upsertVideoCatalog(metadata: YouTubeVideoMetadata[]) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const now = new Date().toISOString();
   const rows = metadata
     .filter((video) => video.videoId && video.channelId)
@@ -229,6 +229,7 @@ async function upsertVideoCatalog(metadata: YouTubeVideoMetadata[]) {
       published_at: video.publishedAt,
       duration_seconds: video.durationSeconds,
       content_type: video.contentType,
+      privacy_status: video.privacyStatus,
       view_count: video.viewCount,
       last_synced_at: now,
       updated_at: now
@@ -237,7 +238,7 @@ async function upsertVideoCatalog(metadata: YouTubeVideoMetadata[]) {
   for (const rowsChunk of chunk(rows, 500)) {
     if (rowsChunk.length === 0) continue;
 
-    const { error } = await supabase.from("youtube_video_catalog").upsert(rowsChunk, {
+    const { error } = await db.from("youtube_video_catalog").upsert(rowsChunk, {
       onConflict: "video_id"
     });
 

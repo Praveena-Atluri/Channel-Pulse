@@ -34,6 +34,7 @@ import {
 } from "@/lib/monthly-target-metrics";
 import { getMonthlyTargetDashboardDataSafe, type MonthlyTargetDashboardData } from "@/lib/monthly-targets";
 import { requireCurrentAccount } from "@/lib/server-auth";
+import { isLoginSyncFresh } from "@/lib/login-sync-utils";
 import { ensureYoutubeAnalyticsRangeData, getIncompleteYoutubeAnalyticsChannelIds } from "@/lib/youtube-auto-sync";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import {
@@ -76,7 +77,7 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
   let autoSyncError = "";
   let autoSyncWarning = "";
 
-  if (dashboard.schemaReady && cmsConfigured) {
+  if (dashboard.schemaReady && cmsConfigured && !isLoginSyncFresh(dashboard.latestSync?.finishedAt)) {
     const channelsToSync = getDashboardSyncChannels(dashboard.filters.channelId, dashboard.channels);
     try {
       await Promise.all([
@@ -172,6 +173,9 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
                 {selectedChannel?.title ?? "Selected channel"} | {formatMonthLabel(dashboard.selectedMonth)} |{" "}
                 {contentTypeLabel(dashboard.filters.contentType)}
               </p>
+              <p className="mt-1 text-xs font-semibold text-muted-foreground">
+                Last updated: {formatLastUpdatedLabel(dashboard.latestSync?.finishedAt)}
+              </p>
             </div>
           </div>
 
@@ -192,7 +196,7 @@ export default async function YoutubePerformancePage({ searchParams }: YoutubePe
         {!dashboard.schemaReady ? (
           <StatusPanel
             title="Analytics schema is not ready"
-            message="Apply the Supabase migration in supabase/migrations/youtube_performance_schema.sql, then run an on-demand sync to populate this dashboard."
+            message="Apply the Turso schema in database/turso-channel-pulse-schema.sql, then run an on-demand sync to populate this dashboard."
           />
         ) : null}
 
@@ -877,6 +881,19 @@ function formatMonthLabel(month: string) {
   return new Intl.DateTimeFormat("en-IN", { month: "short", year: "numeric" }).format(
     new Date(Date.UTC(year, monthNumber - 1, 1))
   );
+}
+
+function formatLastUpdatedLabel(value: string | null | undefined) {
+  if (!value) return "Not synced yet";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not synced yet";
+
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata"
+  }).format(date);
 }
 
 function toVideoTableRows(

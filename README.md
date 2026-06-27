@@ -5,7 +5,7 @@ Channel Pulse is a standalone Next.js dashboard for YouTube CMS performance. It 
 ## Stack
 
 - Next.js 15 App Router
-- Turso/libSQL storage, with Supabase fallback during migration
+- Turso/libSQL storage
 - YouTube Analytics and Data APIs
 - Shadcn-style UI components
 - Node test runner for utility coverage
@@ -88,8 +88,6 @@ Useful options:
 Channel Pulse uses standard SQL tables for dashboard data. For Turso/libSQL, run:
 
 - `database/turso-channel-pulse-schema.sql`
-
-The old Supabase schema remains in `supabase/migrations/youtube_performance_schema.sql` for reference and fallback while migrating.
 
 To copy only the schema into Turso, run:
 

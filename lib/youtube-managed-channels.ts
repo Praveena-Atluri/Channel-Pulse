@@ -1,4 +1,4 @@
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import {
   fetchManagedYouTubeChannels,
   getYouTubeCmsConfig,
@@ -18,10 +18,10 @@ export type StoredYoutubeManagedChannel = {
   lastSyncedAt: string | null;
 };
 
-type SupabaseAdminClient = ReturnType<typeof createSupabaseAdminClient>;
+type DatabaseAdminClient = ReturnType<typeof createDatabaseAdminClient>;
 
-export async function listStoredYoutubeManagedChannels(supabase = createSupabaseAdminClient()) {
-  const { data, error } = await supabase
+export async function listStoredYoutubeManagedChannels(db = createDatabaseAdminClient()) {
+  const { data, error } = await db
     .from("youtube_managed_channels")
     .select("channel_id,title,custom_url,thumbnail_url,subscriber_count,view_count,video_count,last_synced_at")
     .order("title", { ascending: true });
@@ -52,7 +52,7 @@ export async function listStoredYoutubeManagedChannels(supabase = createSupabase
 }
 
 export async function refreshYoutubeManagedChannelCatalog() {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const config = getYouTubeCmsConfig();
   const accessToken = await refreshYouTubeAccessToken(config);
   const channelsById = new Map<string, YouTubeChannelMetadata>();
@@ -64,13 +64,13 @@ export async function refreshYoutubeManagedChannelCatalog() {
     }
   }
 
-  await upsertYoutubeManagedChannels(supabase, Array.from(channelsById.values()));
+  await upsertYoutubeManagedChannels(db, Array.from(channelsById.values()));
 
-  return listStoredYoutubeManagedChannels(supabase);
+  return listStoredYoutubeManagedChannels(db);
 }
 
 export async function upsertYoutubeManagedChannels(
-  supabase: SupabaseAdminClient,
+  db: DatabaseAdminClient,
   metadata: YouTubeChannelMetadata[]
 ) {
   const now = new Date().toISOString();
@@ -89,7 +89,7 @@ export async function upsertYoutubeManagedChannels(
   for (const rowsChunk of chunk(rows, 500)) {
     if (rowsChunk.length === 0) continue;
 
-    const { error } = await supabase.from("youtube_managed_channels").upsert(rowsChunk, {
+    const { error } = await db.from("youtube_managed_channels").upsert(rowsChunk, {
       onConflict: "channel_id"
     });
 

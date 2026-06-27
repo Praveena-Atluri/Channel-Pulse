@@ -1,9 +1,12 @@
 import type { ChannelPulseAccount } from "@/lib/auth";
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import { ensureYoutubeAnalyticsRangeData } from "@/lib/youtube-auto-sync";
+import {
+  getLoginSyncScope,
+  isLoginSyncFresh
+} from "@/lib/login-sync-utils";
 import { listStoredYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
-import { syncYoutubeCmsAnalytics } from "@/lib/youtube-performance-sync";
 import { syncYoutubePublishedVideosForDate } from "@/lib/youtube-published-video-sync";
 import { normalizeReportDate } from "@/lib/youtube-performance-utils";
 
@@ -12,23 +15,47 @@ type LoginSyncChannel = {
   title?: string | null;
 };
 
-const inFlightLoginSyncs = new Map<string, Promise<void>>();
-const CHECK_PAGE_SIZE = 1000;
-const RECENT_REVENUE_REFRESH_COMPLETE_DAYS = 7;
-const DAILY_METRIC_REFRESH_CONCURRENCY = 2;
+type LoginSyncStateRow = {
+  last_error_message?: string | null;
+  last_started_at: string | null;
+  last_status: string;
+  last_synced_at: string | null;
+};
 
-export async function runLoginYoutubeSync(account: ChannelPulseAccount) {
+export type LoginYoutubeSyncState = {
+  errorMessage: string | null;
+  startedAt: string | null;
+  status: string;
+  syncedAt: string | null;
+};
+
+const inFlightLoginSyncs = new Map<string, Promise<void>>();
+const LOGIN_SYNC_RUNNING_LEASE_MS = 15 * 60 * 1000;
+
+export async function runLoginYoutubeSync(_account: ChannelPulseAccount) {
   if (!isYouTubeCmsConfigured()) {
     return;
   }
 
-  const channels = filterChannelsForAccount(await listStoredYoutubeManagedChannels(), account);
+  const channels = await listStoredYoutubeManagedChannels();
   if (channels.length === 0) {
     return;
   }
 
+  const channelIds = getUniqueChannelIds(channels);
+  const syncScope = getLoginSyncScope(channelIds);
+  const db = createDatabaseAdminClient();
+  const state = await getLoginSyncState(db, syncScope);
+  if (isLoginSyncFresh(state?.last_synced_at)) {
+    return;
+  }
+
+  if (isLoginSyncRunning(state?.last_started_at, state?.last_status)) {
+    return;
+  }
+
   const { endDate, startDate } = getLoginSyncDateRange();
-  const key = `${startDate}|${endDate}|${channels.map((channel) => channel.channelId).sort().join(",")}`;
+  const key = `${syncScope}|${startDate}|${endDate}`;
   const existingSync = inFlightLoginSyncs.get(key);
   if (existingSync) {
     await existingSync;
@@ -36,18 +63,25 @@ export async function runLoginYoutubeSync(account: ChannelPulseAccount) {
   }
 
   const syncPromise = (async () => {
+    await markLoginSyncStarted(db, syncScope, channelIds);
     await ensureYoutubeAnalyticsRangeData({
       channels,
       endDate,
+      forceSync: true,
       startDate,
       storePeriodBreakdowns: true
     });
-    await syncStaleDailyMetricRanges(channels, { endDate, startDate });
     await syncRecentPublishedVideos(channels);
+    await markLoginSyncSuccess(db, syncScope, channelIds);
   })()
     .then(() => undefined)
-    .catch((error) => {
+    .catch(async (error) => {
       console.error("Login YouTube sync failed.", error);
+      try {
+        await markLoginSyncFailed(db, syncScope, channelIds, getErrorMessage(error));
+      } catch (stateError) {
+        console.error("Login YouTube sync state update failed.", stateError);
+      }
     })
     .finally(() => {
       inFlightLoginSyncs.delete(key);
@@ -55,6 +89,27 @@ export async function runLoginYoutubeSync(account: ChannelPulseAccount) {
 
   inFlightLoginSyncs.set(key, syncPromise);
   await syncPromise;
+}
+
+export async function getLatestLoginYoutubeSyncState(): Promise<LoginYoutubeSyncState | null> {
+  const db = createDatabaseAdminClient();
+  const { data, error } = await db
+    .from("youtube_login_sync_state")
+    .select("last_status,last_started_at,last_synced_at,last_error_message")
+    .order("last_synced_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error && !isMissingLoginSyncStateTableError(error)) throw error;
+  const row = data as LoginSyncStateRow | null;
+  if (!row) return null;
+
+  return {
+    errorMessage: row.last_error_message ?? null,
+    startedAt: row.last_started_at,
+    status: row.last_status,
+    syncedAt: row.last_synced_at
+  };
 }
 
 export function getLoginSyncDateRange(now = new Date()) {
@@ -67,22 +122,97 @@ export function getLoginSyncDateRange(now = new Date()) {
   };
 }
 
-export function getLoginRevenueRefreshDateRange(now = new Date()) {
-  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const end = new Date(today);
-  end.setUTCDate(end.getUTCDate() - 1);
-
-  const start = new Date(end);
-  start.setUTCDate(start.getUTCDate() - RECENT_REVENUE_REFRESH_COMPLETE_DAYS + 1);
-
-  return {
-    startDate: normalizeReportDate(start),
-    endDate: normalizeReportDate(end)
-  };
-}
-
 export function getLoginTodayDate(now = new Date()) {
   return normalizeReportDate(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())));
+}
+
+async function getLoginSyncState(
+  db: ReturnType<typeof createDatabaseAdminClient>,
+  syncScope: string
+): Promise<LoginSyncStateRow | null> {
+  const { data, error } = await db
+    .from("youtube_login_sync_state")
+    .select("last_status,last_started_at,last_synced_at")
+    .eq("sync_scope", syncScope)
+    .maybeSingle();
+
+  if (error) throw error;
+  return (data ?? null) as LoginSyncStateRow | null;
+}
+
+async function markLoginSyncStarted(
+  db: ReturnType<typeof createDatabaseAdminClient>,
+  syncScope: string,
+  channelIds: string[]
+) {
+  const now = new Date().toISOString();
+  await upsertLoginSyncState(db, {
+    channel_count: channelIds.length,
+    channel_ids: JSON.stringify(channelIds),
+    last_error_message: null,
+    last_started_at: now,
+    last_status: "running",
+    sync_scope: syncScope,
+    updated_at: now
+  });
+}
+
+async function markLoginSyncSuccess(
+  db: ReturnType<typeof createDatabaseAdminClient>,
+  syncScope: string,
+  channelIds: string[]
+) {
+  const now = new Date().toISOString();
+  await upsertLoginSyncState(db, {
+    channel_count: channelIds.length,
+    channel_ids: JSON.stringify(channelIds),
+    last_error_message: null,
+    last_status: "success",
+    last_synced_at: now,
+    sync_scope: syncScope,
+    updated_at: now
+  });
+}
+
+async function markLoginSyncFailed(
+  db: ReturnType<typeof createDatabaseAdminClient>,
+  syncScope: string,
+  channelIds: string[],
+  errorMessage: string
+) {
+  const now = new Date().toISOString();
+  await upsertLoginSyncState(db, {
+    channel_count: channelIds.length,
+    channel_ids: JSON.stringify(channelIds),
+    last_error_message: errorMessage,
+    last_status: "failed",
+    sync_scope: syncScope,
+    updated_at: now
+  });
+}
+
+async function upsertLoginSyncState(
+  db: ReturnType<typeof createDatabaseAdminClient>,
+  row: Record<string, unknown>
+) {
+  const { error } = await db.from("youtube_login_sync_state").upsert([row], {
+    onConflict: "sync_scope"
+  });
+
+  if (error) throw error;
+}
+
+function isLoginSyncRunning(
+  lastStartedAt: string | null | undefined,
+  status: string | null | undefined,
+  now = new Date()
+) {
+  if (status !== "running" || !lastStartedAt) return false;
+
+  const startedAt = new Date(lastStartedAt).getTime();
+  if (!Number.isFinite(startedAt)) return false;
+
+  return now.getTime() - startedAt < LOGIN_SYNC_RUNNING_LEASE_MS;
 }
 
 async function syncRecentPublishedVideos(channels: LoginSyncChannel[]) {
@@ -96,191 +226,6 @@ async function syncRecentPublishedVideos(channels: LoginSyncChannel[]) {
       console.error(`Login published video sync failed for ${date}.`, error);
     }
   });
-}
-
-async function syncStaleDailyMetricRanges(
-  channels: LoginSyncChannel[],
-  loginRange: { endDate: string; startDate: string }
-) {
-  const channelIds = Array.from(new Set(channels.map((channel) => channel.channelId).filter(Boolean)));
-  if (channelIds.length === 0) return;
-
-  const revenueRange = getLoginRevenueRefreshDateRange();
-  const ranges = mergeChannelRanges([
-    ...(await getStaleDailyMetricRanges(channelIds, loginRange.startDate, loginRange.endDate)),
-    ...(await getZeroRevenueChannelRanges(channelIds, revenueRange.startDate, revenueRange.endDate))
-  ]);
-  if (ranges.length === 0) return;
-
-  await mapWithConcurrency(ranges, DAILY_METRIC_REFRESH_CONCURRENCY, async (range) => {
-    try {
-      await syncYoutubeCmsAnalytics({
-        channelId: range.channelId,
-        endDate: range.endDate,
-        startDate: range.startDate,
-        storePeriodBreakdowns: false,
-        syncType: "daily"
-      });
-    } catch (error) {
-      console.error(
-        `Login daily metric refresh failed for ${range.channelId} from ${range.startDate} to ${range.endDate}.`,
-        error
-      );
-    }
-  });
-}
-
-async function getStaleDailyMetricRanges(channelIds: string[], startDate: string, endDate: string) {
-  const supabase = createSupabaseAdminClient();
-  const pendingDaysByChannelId = new Map(channelIds.map((channelId) => [channelId, [] as string[]]));
-  let offset = 0;
-
-  while (true) {
-    const { data, error } = await supabase
-      .from("youtube_channel_daily_metrics")
-      .select("channel_id,day,updated_at")
-      .in("channel_id", channelIds)
-      .gte("day", startDate)
-      .lte("day", endDate)
-      .order("channel_id", { ascending: true })
-      .order("day", { ascending: true })
-      .range(offset, offset + CHECK_PAGE_SIZE - 1);
-
-    if (error) throw error;
-
-    for (const row of (data ?? []) as Array<{
-      channel_id: string;
-      day: string;
-      updated_at: string | null;
-    }>) {
-      if (!isStaleDailyMetricRow(row)) continue;
-      pendingDaysByChannelId.get(row.channel_id)?.push(row.day);
-    }
-
-    if (!data || data.length < CHECK_PAGE_SIZE) break;
-    offset += CHECK_PAGE_SIZE;
-  }
-
-  return Array.from(pendingDaysByChannelId.entries()).flatMap(([channelId, days]) =>
-    groupConsecutiveDays(channelId, days)
-  );
-}
-
-async function getZeroRevenueChannelRanges(channelIds: string[], startDate: string, endDate: string) {
-  const supabase = createSupabaseAdminClient();
-  const pendingDaysByChannelId = new Map(channelIds.map((channelId) => [channelId, [] as string[]]));
-  let offset = 0;
-
-  while (true) {
-    const { data, error } = await supabase
-      .from("youtube_channel_daily_metrics")
-      .select("channel_id,day,views,estimated_revenue,monetized_playbacks,ad_impressions")
-      .in("channel_id", channelIds)
-      .gte("day", startDate)
-      .lte("day", endDate)
-      .order("channel_id", { ascending: true })
-      .order("day", { ascending: true })
-      .range(offset, offset + CHECK_PAGE_SIZE - 1);
-
-    if (error) throw error;
-
-    for (const row of (data ?? []) as Array<{
-      ad_impressions: number | string | null;
-      channel_id: string;
-      day: string;
-      estimated_revenue: number | string | null;
-      monetized_playbacks: number | string | null;
-      views: number | string | null;
-    }>) {
-      if (!hasActivityWithZeroRevenue(row)) continue;
-      pendingDaysByChannelId.get(row.channel_id)?.push(row.day);
-    }
-
-    if (!data || data.length < CHECK_PAGE_SIZE) break;
-    offset += CHECK_PAGE_SIZE;
-  }
-
-  return Array.from(pendingDaysByChannelId.entries()).flatMap(([channelId, days]) =>
-    groupConsecutiveDays(channelId, days)
-  );
-}
-
-function isStaleDailyMetricRow(row: { day: string; updated_at: string | null }) {
-  const updatedDate = row.updated_at?.slice(0, 10) ?? "";
-  return !updatedDate || updatedDate <= row.day;
-}
-
-function hasActivityWithZeroRevenue(row: {
-  ad_impressions: number | string | null;
-  estimated_revenue: number | string | null;
-  monetized_playbacks: number | string | null;
-  views: number | string | null;
-}) {
-  return (
-    isZero(row.estimated_revenue) &&
-    (toNumber(row.views) > 0 || toNumber(row.monetized_playbacks) > 0 || toNumber(row.ad_impressions) > 0)
-  );
-}
-
-function mergeChannelRanges(ranges: Array<{ channelId: string; endDate: string; startDate: string }>) {
-  const daysByChannelId = new Map<string, string[]>();
-
-  for (const range of ranges) {
-    const days = daysByChannelId.get(range.channelId) ?? [];
-    days.push(...getInclusiveDateKeys(range.startDate, range.endDate));
-    daysByChannelId.set(range.channelId, days);
-  }
-
-  return Array.from(daysByChannelId.entries()).flatMap(([channelId, days]) =>
-    groupConsecutiveDays(channelId, days)
-  );
-}
-
-function groupConsecutiveDays(channelId: string, days: string[]) {
-  const sortedDays = Array.from(new Set(days)).sort();
-  const ranges: Array<{ channelId: string; endDate: string; startDate: string }> = [];
-  let startDate = "";
-  let previousDate = "";
-
-  for (const day of sortedDays) {
-    if (!startDate) {
-      startDate = day;
-      previousDate = day;
-      continue;
-    }
-
-    if (day === addDays(previousDate, 1)) {
-      previousDate = day;
-      continue;
-    }
-
-    ranges.push({ channelId, endDate: previousDate, startDate });
-    startDate = day;
-    previousDate = day;
-  }
-
-  if (startDate) {
-    ranges.push({ channelId, endDate: previousDate, startDate });
-  }
-
-  return ranges;
-}
-
-function getInclusiveDateKeys(startDate: string, endDate: string) {
-  const start = new Date(`${startDate}T00:00:00.000Z`);
-  const end = new Date(`${endDate}T00:00:00.000Z`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start.getTime() > end.getTime()) {
-    return [];
-  }
-
-  const days: string[] = [];
-  const cursor = new Date(start);
-  while (cursor.getTime() <= end.getTime()) {
-    days.push(cursor.toISOString().slice(0, 10));
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-
-  return days;
 }
 
 async function mapWithConcurrency<T>(items: T[], concurrency: number, callback: (item: T) => Promise<void>) {
@@ -298,18 +243,25 @@ function addDays(value: string, days: number) {
   return date.toISOString().slice(0, 10);
 }
 
-function isZero(value: number | string | null | undefined) {
-  return Math.abs(toNumber(value)) < 0.000001;
+function getUniqueChannelIds(channels: LoginSyncChannel[]) {
+  return Array.from(new Set(channels.map((channel) => channel.channelId).filter(Boolean))).sort();
 }
 
-function toNumber(value: number | string | null | undefined) {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
+function getErrorMessage(error: unknown) {
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Login YouTube sync failed.";
+  }
 }
 
-function filterChannelsForAccount<T extends LoginSyncChannel>(channels: T[], account: ChannelPulseAccount) {
-  if (account.channelIds === null) return channels;
-
-  const allowedChannelIds = new Set(account.channelIds);
-  return channels.filter((channel) => allowedChannelIds.has(channel.channelId));
+function isMissingLoginSyncStateTableError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("youtube_login_sync_state") &&
+    (message.includes("does not exist") || message.includes("no such table"))
+  );
 }

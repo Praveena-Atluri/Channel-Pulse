@@ -28,6 +28,8 @@ create table if not exists youtube_video_catalog (
   duration_seconds integer,
   content_type     text not null default 'unknown'
     check (content_type in ('short', 'long', 'live', 'unknown')),
+  privacy_status   text not null default 'unknown'
+    check (privacy_status in ('public', 'unlisted', 'private', 'unknown')),
   view_count       integer,
   last_synced_at   text,
   created_at       text not null default (datetime('now')),
@@ -121,6 +123,19 @@ create table if not exists youtube_analytics_sync_runs (
   metadata            text not null default '{}'
 );
 
+create table if not exists youtube_login_sync_state (
+  sync_scope         text primary key,
+  channel_count      integer not null default 0,
+  channel_ids        text not null default '[]',
+  last_status        text not null default 'idle'
+    check (last_status in ('idle', 'running', 'success', 'failed')),
+  last_started_at    text,
+  last_synced_at     text,
+  last_error_message text,
+  created_at         text not null default (datetime('now')),
+  updated_at         text not null default (datetime('now'))
+);
+
 create table if not exists youtube_monthly_channel_targets (
   month                  text not null check (length(month) = 7),
   channel_id             text not null references youtube_managed_channels(channel_id) on delete cascade,
@@ -151,6 +166,8 @@ create index if not exists youtube_video_catalog_channel_idx
   on youtube_video_catalog (channel_id, published_at desc);
 create index if not exists youtube_video_catalog_content_type_idx
   on youtube_video_catalog (content_type);
+create index if not exists youtube_video_catalog_privacy_idx
+  on youtube_video_catalog (privacy_status, channel_id, published_at desc);
 create index if not exists youtube_channel_daily_metrics_day_idx
   on youtube_channel_daily_metrics (day desc);
 create index if not exists youtube_channel_daily_metrics_channel_day_idx
@@ -171,6 +188,8 @@ create index if not exists youtube_country_daily_metrics_revenue_idx
   on youtube_country_daily_metrics (channel_id, estimated_revenue desc);
 create index if not exists youtube_analytics_sync_runs_started_idx
   on youtube_analytics_sync_runs (started_at desc);
+create index if not exists youtube_login_sync_state_synced_idx
+  on youtube_login_sync_state (last_synced_at desc);
 create index if not exists youtube_monthly_channel_targets_channel_idx
   on youtube_monthly_channel_targets (channel_id, month desc);
 create index if not exists youtube_daily_channel_targets_updated_idx

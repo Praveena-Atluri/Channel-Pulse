@@ -3,6 +3,10 @@ import {
   parseIsoDurationToSeconds,
   type VideoContentType
 } from "@/lib/youtube-performance-utils";
+import {
+  normalizeVideoPrivacyStatus,
+  type VideoPrivacyStatus
+} from "@/lib/youtube-video-privacy";
 
 const OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const YOUTUBE_ANALYTICS_REPORT_URL = "https://youtubeanalytics.googleapis.com/v2/reports";
@@ -57,6 +61,7 @@ export type YouTubeVideoMetadata = {
   publishedAt: string | null;
   durationSeconds: number | null;
   contentType: VideoContentType;
+  privacyStatus: VideoPrivacyStatus;
   viewCount: number | null;
 };
 
@@ -372,7 +377,7 @@ export async function fetchYouTubeVideos(
     if (ids.length === 0) continue;
 
     const params = new URLSearchParams({
-      part: "snippet,contentDetails,statistics",
+      part: "snippet,contentDetails,statistics,status",
       id: ids.join(","),
       maxResults: "50"
     });
@@ -399,6 +404,7 @@ export async function fetchYouTubeVideos(
         };
         contentDetails?: { duration?: string };
         statistics?: { viewCount?: string };
+        status?: { privacyStatus?: string };
       }>;
     };
 
@@ -418,6 +424,7 @@ export async function fetchYouTubeVideos(
         publishedAt: item.snippet?.publishedAt ?? null,
         durationSeconds,
         contentType: classifyVideoContentType({ durationSeconds }),
+        privacyStatus: normalizeVideoPrivacyStatus(item.status?.privacyStatus),
         viewCount: parseOptionalNumber(item.statistics?.viewCount)
       });
     }

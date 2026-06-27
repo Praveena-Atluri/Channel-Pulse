@@ -20,23 +20,27 @@ const turso = createClient({
 });
 
 try {
+  await ensureCompatibilityColumns();
   const schemaPath = join(ROOT_DIR, "database", "turso-channel-pulse-schema.sql");
   const schema = await readFile(schemaPath, "utf8");
   await turso.executeMultiple(schema);
-  await ensureMonthlyTargetColumns();
+  await ensureCompatibilityColumns();
   console.log("Turso schema applied.");
 } finally {
   turso.close();
 }
 
-async function ensureMonthlyTargetColumns() {
-  const result = await turso.execute("pragma table_info(youtube_monthly_channel_targets)");
-  const columns = new Set(result.rows.map((row) => String(row.name)));
+async function ensureCompatibilityColumns() {
   const additions = [
     {
       table: "youtube_channel_daily_metrics",
       name: "impressions_click_through_rate",
       sql: "alter table youtube_channel_daily_metrics add column impressions_click_through_rate real"
+    },
+    {
+      table: "youtube_video_catalog",
+      name: "privacy_status",
+      sql: "alter table youtube_video_catalog add column privacy_status text not null default 'unknown' check (privacy_status in ('public', 'unlisted', 'private', 'unknown'))"
     },
     {
       table: "youtube_monthly_channel_targets",
@@ -51,13 +55,16 @@ async function ensureMonthlyTargetColumns() {
   ];
 
   for (const addition of additions) {
-    const tableColumns =
-      addition.table === "youtube_monthly_channel_targets"
-        ? columns
-        : new Set((await turso.execute(`pragma table_info(${addition.table})`)).rows.map((row) => String(row.name)));
+    const tableColumns = await getTableColumns(addition.table);
 
+    if (tableColumns.size === 0) continue;
     if (!tableColumns.has(addition.name)) {
       await turso.execute(addition.sql);
     }
   }
+}
+
+async function getTableColumns(table) {
+  const result = await turso.execute(`pragma table_info(${table})`);
+  return new Set(result.rows.map((row) => String(row.name)));
 }

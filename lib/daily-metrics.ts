@@ -1,4 +1,4 @@
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import type { StoredYoutubeManagedChannel } from "@/lib/youtube-managed-channels";
 import type { VideoContentType } from "@/lib/youtube-performance-utils";
 
@@ -117,14 +117,31 @@ export async function getDailyMetricsDashboardData({
   };
 }
 
+export async function getLatestDailyVideoCatalogSyncAt(channelIds: string[]) {
+  if (channelIds.length === 0) return null;
+
+  const db = createDatabaseAdminClient();
+  const { data, error } = await db
+    .from("youtube_video_catalog")
+    .select("last_synced_at")
+    .in("channel_id", Array.from(new Set(channelIds.filter(Boolean))))
+    .order("last_synced_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) throw error;
+  const row = data as { last_synced_at?: string | null } | null;
+  return row?.last_synced_at ?? null;
+}
+
 async function getPublishedVideoCatalogRows(channelIds: string[], date: string) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const rows: DailyVideoCatalogRow[] = [];
   const { endDateTime, startDateTime } = getDailyMetricsUtcRange(date);
   let offset = 0;
 
   while (true) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from("youtube_video_catalog")
       .select("video_id,channel_id,title,thumbnail_url,published_at,content_type")
       .in("channel_id", channelIds)

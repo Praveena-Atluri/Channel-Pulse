@@ -1,4 +1,4 @@
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import type { DailyMetricsVideoRow } from "@/lib/daily-metrics";
 
 export type DailyPublishingTargetValues = {
@@ -97,7 +97,7 @@ export async function saveDailyPublishingTargets({
   rows: SaveDailyPublishingTargetInputRow[];
   username: string;
 }) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const channelIds = rows.map((row) => row.channelId);
   const existingRows = await getDailyTargetRows(channelIds);
   const existingRowsByChannelId = new Map(existingRows.map((row) => [row.channel_id, row]));
@@ -117,7 +117,7 @@ export async function saveDailyPublishingTargets({
 
   if (payload.length === 0) return;
 
-  const { error } = await supabase
+  const { error } = await db
     .from("youtube_daily_channel_targets")
     .upsert(payload, { onConflict: "channel_id" });
 
@@ -139,8 +139,8 @@ export function normalizeDailyPublishingTargetValue(value: unknown) {
 async function getDailyTargetRows(channelIds: string[]) {
   if (channelIds.length === 0) return [];
 
-  const supabase = createSupabaseAdminClient();
-  const { data, error } = await supabase
+  const db = createDatabaseAdminClient();
+  const { data, error } = await db
     .from("youtube_daily_channel_targets")
     .select(TARGET_SELECT_COLUMNS)
     .in("channel_id", channelIds);

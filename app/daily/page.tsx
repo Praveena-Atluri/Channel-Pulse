@@ -13,6 +13,7 @@ import { VideoListExcelDownloadButton } from "@/components/video-list-excel-down
 import {
   getDailyMetricsDashboardData,
   getDefaultDailyMetricsDate,
+  getLatestDailyVideoCatalogSyncAt,
   getMaxDailyMetricsDate,
   normalizeDailyMetricsDate,
   type DailyMetricsVideoRow
@@ -21,11 +22,9 @@ import {
   getDailyPublishingTargetDashboardDataSafe,
   type DailyPublishingTargetDashboardRow
 } from "@/lib/daily-targets";
+import { getLatestLoginYoutubeSyncState } from "@/lib/login-youtube-sync";
 import { requireCurrentAccount } from "@/lib/server-auth";
-import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import { listStoredYoutubeManagedChannels } from "@/lib/youtube-managed-channels";
-import { syncYoutubeCreatorContentTypesForVideos } from "@/lib/youtube-performance-sync";
-import { syncYoutubePublishedVideosForDate } from "@/lib/youtube-published-video-sync";
 
 export const dynamic = "force-dynamic";
 
@@ -49,33 +48,14 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
     requestedChannelId === "all" || channels.some((channel) => channel.channelId === requestedChannelId)
       ? requestedChannelId
       : "all";
-  let syncMessage = "";
   const targetChannels = channelId === "all" ? channels : channels.filter((channel) => channel.channelId === channelId);
-
-  if (isYouTubeCmsConfigured()) {
-    try {
-      const syncResult = await syncYoutubePublishedVideosForDate({ channels: targetChannels, date });
-      if (syncResult.warnings.length > 0) {
-        syncMessage = syncResult.warnings.join(" ");
-      }
-    } catch (error) {
-      syncMessage = getErrorMessage(error);
-    }
-  }
-
-  let dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
-
-  if (isYouTubeCmsConfigured()) {
-    try {
-      const rowsNeedingContentTypeSync = dashboard.rows.filter((row) => row.contentType === "unknown");
-      if (rowsNeedingContentTypeSync.length > 0) {
-        await syncMissingDailyVideoContentTypes(rowsNeedingContentTypeSync, date);
-        dashboard = await getDailyMetricsDashboardData({ channelId, channels, date });
-      }
-    } catch (error) {
-      syncMessage = syncMessage ? `${syncMessage} ${getErrorMessage(error)}` : getErrorMessage(error);
-    }
-  }
+  const targetChannelIds = targetChannels.map((channel) => channel.channelId);
+  const [dashboard, latestSync, latestCatalogSyncAt] = await Promise.all([
+    getDailyMetricsDashboardData({ channelId, channels, date }),
+    getLatestLoginYoutubeSyncState(),
+    getLatestDailyVideoCatalogSyncAt(targetChannelIds)
+  ]);
+  const lastUpdatedAt = latestSync?.syncedAt ?? latestCatalogSyncAt;
   const dailyTargets = await getDailyPublishingTargetDashboardDataSafe({
     actualRows: dashboard.rows,
     channels: targetChannels
@@ -98,6 +78,10 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
                 </Badge>
               </div>
               <p className="text-sm text-muted-foreground">Published videos categorized as long or short.</p>
+              <p className="mt-1 text-xs font-semibold text-muted-foreground">
+                Last updated: {formatLastUpdatedLabel(lastUpdatedAt)}
+                {latestSync?.status === "running" ? " | Syncing now" : ""}
+              </p>
             </div>
           </div>
 
@@ -146,11 +130,6 @@ export default async function DailyMetricsPage({ searchParams }: DailyMetricsPag
                 </select>
               </label>
             </YoutubeAutoSubmitForm>
-            {syncMessage ? (
-              <div className="mt-3 rounded-md border border-amber-400/60 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-950 dark:bg-amber-500/10 dark:text-amber-100">
-                {syncMessage}
-              </div>
-            ) : null}
           </CardContent>
         </Card>
 
@@ -215,20 +194,6 @@ function DailyPublishingLoadingPanel() {
       </div>
     </section>
   );
-}
-
-async function syncMissingDailyVideoContentTypes(rows: DailyMetricsVideoRow[], date: string) {
-  const startDate = addDays(date, -1);
-  const videoIdsByChannelId = new Map<string, string[]>();
-  for (const row of rows) {
-    const videoIds = videoIdsByChannelId.get(row.channelId) ?? [];
-    videoIds.push(row.videoId);
-    videoIdsByChannelId.set(row.channelId, videoIds);
-  }
-
-  for (const [channelId, videoIds] of videoIdsByChannelId) {
-    await syncYoutubeCreatorContentTypesForVideos({ channelId, endDate: date, startDate, videoIds });
-  }
 }
 
 function DailyVideoTable({ rows }: { rows: DailyMetricsVideoRow[] }) {
@@ -387,6 +352,18 @@ function formatDateTimeLabel(value: string | null) {
   }).format(date);
 }
 
+function formatLastUpdatedLabel(value: string | null | undefined) {
+  if (!value) return "Not synced yet";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not synced yet";
+
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata"
+  }).format(date);
+}
+
 function getPublishingTargetTotals(rows: DailyPublishingTargetDashboardRow[]) {
   const totals = rows.reduce(
     (current, row) => {
@@ -417,23 +394,4 @@ function getPublishingTargetTotals(rows: DailyPublishingTargetDashboardRow[]) {
     shortVideos:
       selectedChannelCount > 0 && totals.shortTargetCount === selectedChannelCount ? totals.shortVideos : null
   };
-}
-
-function addDays(value: string, days: number) {
-  const date = new Date(`${value}T00:00:00.000Z`);
-  if (Number.isNaN(date.getTime())) return value;
-
-  date.setUTCDate(date.getUTCDate() + days);
-  return date.toISOString().slice(0, 10);
-}
-
-function getErrorMessage(error: unknown) {
-  if (error instanceof Error) return error.message;
-  if (typeof error === "string") return error;
-
-  try {
-    return JSON.stringify(error);
-  } catch {
-    return "Daily video metric sync failed.";
-  }
 }

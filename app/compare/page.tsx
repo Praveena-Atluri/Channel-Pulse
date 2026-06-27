@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { canAccountViewRevenue, getAccountChannelAccess, isAuthConfigured } from "@/lib/auth";
+import { isLoginSyncFresh } from "@/lib/login-sync-utils";
 import { requireCurrentAccount } from "@/lib/server-auth";
 import { ensureYoutubeAnalyticsRangeData, getIncompleteYoutubeAnalyticsChannelIds } from "@/lib/youtube-auto-sync";
 import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
@@ -57,7 +58,7 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
   const cmsConfigured = isYouTubeCmsConfigured();
   let autoSyncError = "";
 
-  if (dashboard.schemaReady && cmsConfigured) {
+  if (dashboard.schemaReady && cmsConfigured && !isLoginSyncFresh(dashboard.latestSync?.finishedAt)) {
     const channelsToSync = getDashboardSyncChannels(dashboard.filters.channelId, dashboard.channels);
     try {
       await ensureYoutubeAnalyticsRangeData({
@@ -125,6 +126,9 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
               <p className="mt-1 text-xs font-semibold text-muted-foreground">
                 {selectedChannel?.title ?? "Selected channel"} | {contentTypeLabel(dashboard.filters.contentType)}
               </p>
+              <p className="mt-1 text-xs font-semibold text-muted-foreground">
+                Last updated: {formatLastUpdatedLabel(dashboard.latestSync?.finishedAt)}
+              </p>
             </div>
           </div>
 
@@ -148,7 +152,7 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
         {!dashboard.schemaReady ? (
           <StatusPanel
             title="Analytics schema is not ready"
-            message="Apply the Channel Pulse Supabase schema, then sync the date ranges you want to compare."
+            message="Apply the Channel Pulse Turso schema, then sync the date ranges you want to compare."
           />
         ) : null}
 
@@ -677,6 +681,19 @@ function formatDateLabel(value: string) {
   return new Intl.DateTimeFormat("en-IN", { day: "numeric", month: "short", year: "numeric" }).format(
     new Date(`${value}T00:00:00.000Z`)
   );
+}
+
+function formatLastUpdatedLabel(value: string | null | undefined) {
+  if (!value) return "Not synced yet";
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not synced yet";
+
+  return new Intl.DateTimeFormat("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata"
+  }).format(date);
 }
 
 function formatCompactNumber(value: number) {

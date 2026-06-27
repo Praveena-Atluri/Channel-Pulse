@@ -1,4 +1,4 @@
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import { syncYoutubeCmsAnalytics } from "@/lib/youtube-performance-sync";
 
 type AutoSyncChannel = {
@@ -154,12 +154,12 @@ async function getMissingRangesForRequestedRanges(ranges: MissingYoutubeAnalytic
 }
 
 async function getUsableDailyMetricDays(channelIds: string[], startDate: string, endDate: string) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const daysByChannelId = new Map(channelIds.map((channelId) => [channelId, new Set<string>()]));
   let offset = 0;
 
   while (true) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from("youtube_channel_daily_metrics")
       .select(
         "channel_id,day,views,estimated_minutes_watched,subscribers_gained,subscribers_lost,estimated_revenue,monetized_playbacks,ad_impressions"

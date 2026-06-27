@@ -18,7 +18,7 @@ import {
   isChannelSummaryColumnId,
   type ChannelSummaryColumnId
 } from "@/lib/channel-summary-report";
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import { listStoredYoutubeManagedChannels, type StoredYoutubeManagedChannel } from "@/lib/youtube-managed-channels";
 import {
   getYoutubePerformanceDashboard,
@@ -49,7 +49,7 @@ const REPORT_TYPES = new Set<ReportType>([
   "channel-summary",
   "channel-compare"
 ]);
-const SUPABASE_PAGE_SIZE = 1000;
+const DB_PAGE_SIZE = 1000;
 const CHANNEL_SUMMARY_REVENUE_COLUMN_IDS = new Set<ChannelSummaryColumnId>([
   "revenue",
   "estimated_ad_revenue",
@@ -268,12 +268,12 @@ async function buildChannelSummaryRows({
     await ensureRevenueMetricsForRange({ channels, startDate, endDate });
   }
 
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const channelIds = channels.map((channel) => channel.channelId);
   const exclusiveEndDate = addDays(endDate, 1);
   const [channelMetricRows, contentTypeMetricRows] = await Promise.all([
-    getChannelMetricRows(supabase, startDate, exclusiveEndDate, channelIds),
-    getContentTypeMetricRows(supabase, startDate, exclusiveEndDate, channelIds)
+    getChannelMetricRows(db, startDate, exclusiveEndDate, channelIds),
+    getContentTypeMetricRows(db, startDate, exclusiveEndDate, channelIds)
   ]);
   const summaries = channels.map((channel) => ({
     channel,
@@ -405,12 +405,12 @@ async function buildChannelSummaries(
   startDate: string,
   endDate: string
 ) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const channelIds = channels.map((channel) => channel.channelId);
   const exclusiveEndDate = addDays(endDate, 1);
   const [channelMetricRows, contentTypeMetricRows] = await Promise.all([
-    getChannelMetricRows(supabase, startDate, exclusiveEndDate, channelIds),
-    getContentTypeMetricRows(supabase, startDate, exclusiveEndDate, channelIds)
+    getChannelMetricRows(db, startDate, exclusiveEndDate, channelIds),
+    getContentTypeMetricRows(db, startDate, exclusiveEndDate, channelIds)
   ]);
   const summaries = channels.map(createChannelSummary);
   const summariesById = new Map(summaries.map((summary) => [summary.channel.channelId, summary]));
@@ -564,10 +564,10 @@ async function ensureRevenueMetricsForRange({
 }
 
 async function hasStoredRevenueSignal(channels: StoredYoutubeManagedChannel[], startDate: string, endDate: string) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const channelIds = channels.map((channel) => channel.channelId);
   const exclusiveEndDate = addDays(endDate, 1);
-  const rows = await getChannelMetricRows(supabase, startDate, exclusiveEndDate, channelIds);
+  const rows = await getChannelMetricRows(db, startDate, exclusiveEndDate, channelIds);
   const hasViews = rows.some((row) => toNumber(row.views) > 0);
   if (!hasViews) return true;
 
@@ -590,7 +590,7 @@ function hasChannelCompareRevenueColumns(columnIds: ChannelCompareColumnId[]) {
 }
 
 async function getChannelMetricRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   exclusiveEndDate: string,
   channelIds: string[]
@@ -599,7 +599,7 @@ async function getChannelMetricRows(
   let offset = 0;
 
   while (true) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from("youtube_channel_daily_metrics")
       .select(
         "day,channel_id,views,estimated_minutes_watched,subscribers_gained,subscribers_lost,estimated_revenue,estimated_ad_revenue,gross_revenue,monetized_playbacks,ad_impressions"
@@ -609,19 +609,19 @@ async function getChannelMetricRows(
       .lt("day", exclusiveEndDate)
       .order("day", { ascending: true })
       .order("channel_id", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (error) throw error;
     rows.push(...((data ?? []) as ChannelSummaryMetricRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;
 }
 
 async function getContentTypeMetricRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   exclusiveEndDate: string,
   channelIds: string[]
@@ -630,7 +630,7 @@ async function getContentTypeMetricRows(
   let offset = 0;
 
   while (true) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from("youtube_content_type_daily_metrics")
       .select("day,channel_id,content_type,views")
       .in("channel_id", channelIds)
@@ -639,12 +639,12 @@ async function getContentTypeMetricRows(
       .order("day", { ascending: true })
       .order("channel_id", { ascending: true })
       .order("content_type", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (error) throw error;
     rows.push(...((data ?? []) as ChannelSummaryContentTypeRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;

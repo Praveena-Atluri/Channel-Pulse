@@ -1,6 +1,11 @@
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import type { ChannelAccess } from "@/lib/auth";
 import { filterFocusedYouTubeChannels } from "@/lib/youtube-channel-allowlist";
+import {
+  isPublicVideoPrivacyStatus,
+  normalizeVideoPrivacyStatus,
+  type VideoPrivacyStatus
+} from "@/lib/youtube-video-privacy";
 import {
   addMetricTotals,
   calculateNetSubscribers,
@@ -50,6 +55,7 @@ export type VideoPerformanceRow = MetricTotals & {
   thumbnailUrl: string | null;
   publishedAt: string | null;
   contentType: VideoContentType;
+  privacyStatus: VideoPrivacyStatus;
   cohort: Exclude<VideoCohort, "all">;
 };
 
@@ -185,6 +191,7 @@ type VideoCatalogRow = {
   published_at: string | null;
   content_type: VideoContentType | null;
   duration_seconds: number | string | null;
+  privacy_status: VideoPrivacyStatus;
 };
 
 type ContentTypeMetricRow = {
@@ -215,9 +222,13 @@ type CountryMetricRow = {
 
 const VALID_CONTENT_TYPES: ContentTypeFilter[] = ["all", "short", "long", "live", "unknown"];
 const VALID_COHORTS: VideoCohort[] = ["all", "recent", "old"];
-const SUPABASE_PAGE_SIZE = 1000;
+const DB_PAGE_SIZE = 1000;
 const VIDEO_TABLE_RESULT_LIMIT = 100;
 const DEFAULT_YOUTUBE_CHANNEL_ID = "UCXjhJbviBl0M4JAC3cxDXqA";
+const VIDEO_CATALOG_SELECT_COLUMNS =
+  "video_id,channel_id,title,thumbnail_url,published_at,content_type,duration_seconds,privacy_status";
+const LEGACY_VIDEO_CATALOG_SELECT_COLUMNS =
+  "video_id,channel_id,title,thumbnail_url,published_at,content_type,duration_seconds";
 
 export function normalizeYoutubePerformanceFilters(input: {
   month?: string;
@@ -275,17 +286,17 @@ export async function getYoutubePerformanceDashboard(
   rawFilters: YoutubePerformanceFilters,
   access?: ChannelAccess
 ): Promise<YoutubePerformanceDashboardData> {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const filters = { ...rawFilters };
 
   try {
     const [allChannels, latestSync] = await Promise.all([
-      getManagedChannels(supabase),
-      getLatestSyncRun(supabase)
+      getManagedChannels(db),
+      getLatestSyncRun(db)
     ]);
     const channels = filterChannelsForAccess(allChannels, access);
     filters.channelId = resolveSelectedChannelId(filters.channelId, channels);
-    const latestMonth = await getLatestMetricMonth(supabase, filters.channelId);
+    const latestMonth = await getLatestMetricMonth(db, filters.channelId);
 
     if (!rawFilters.month && latestMonth) {
       filters.month = latestMonth;
@@ -296,8 +307,8 @@ export async function getYoutubePerformanceDashboard(
     const previousRange = getMonthDateRange(previousMonth);
 
     const [currentChannelRows, previousChannelRows] = await Promise.all([
-      getChannelMetrics(supabase, currentRange.startDate, currentRange.endDate, filters.channelId),
-      getChannelMetrics(supabase, previousRange.startDate, previousRange.endDate, filters.channelId)
+      getChannelMetrics(db, currentRange.startDate, currentRange.endDate, filters.channelId),
+      getChannelMetrics(db, previousRange.startDate, previousRange.endDate, filters.channelId)
     ]);
 
     const channelCurrentTotals = sumChannelMetrics(currentChannelRows);
@@ -347,11 +358,11 @@ export async function getYoutubePerformanceDashboard(
 
     const [currentVideos, previousVideos, currentContentTypeRows, previousContentTypeRows, currentCountryRows] =
       await Promise.all([
-      getVideoPerformanceRows(supabase, currentRange.startDate, currentRange.endDate, filters, channels),
-      getVideoPerformanceRows(supabase, previousRange.startDate, previousRange.endDate, filters, channels),
-      getContentTypeMetrics(supabase, currentRange.startDate, currentRange.endDate, filters.channelId),
-      getContentTypeMetrics(supabase, previousRange.startDate, previousRange.endDate, filters.channelId),
-      getCountryMetrics(supabase, currentRange.startDate, currentRange.endDate, filters.channelId)
+      getVideoPerformanceRows(db, currentRange.startDate, currentRange.endDate, filters, channels),
+      getVideoPerformanceRows(db, previousRange.startDate, previousRange.endDate, filters, channels),
+      getContentTypeMetrics(db, currentRange.startDate, currentRange.endDate, filters.channelId),
+      getContentTypeMetrics(db, previousRange.startDate, previousRange.endDate, filters.channelId),
+      getCountryMetrics(db, currentRange.startDate, currentRange.endDate, filters.channelId)
     ]);
 
     const scopedCurrentTotals = getScopedTotals(filters, {
@@ -368,7 +379,9 @@ export async function getYoutubePerformanceDashboard(
     const twoMonthVideos = combineVideoRowsById([...previousVideos.allRows, ...currentVideos.allRows]);
     const twoMonthFilteredVideos = filterVideoRows(twoMonthVideos, filters);
     const twoMonthRecentRows = twoMonthFilteredVideos.filter((row) => row.cohort === "recent");
-    const twoMonthRecentRowsWithViews = twoMonthRecentRows.filter((row) => row.views > 0);
+    const publicTwoMonthRecentRowsWithViews = twoMonthRecentRows.filter(
+      (row) => row.views > 0 && isPublicVideoPrivacyStatus(row.privacyStatus)
+    );
     const cohortBaseTotals =
       filters.contentType === "all" ? channelCurrentTotals : sumContentTypeMetrics(currentContentTypeRows, filters.contentType);
     const selectedMonthRecentRows = currentVideos.allRows.filter((row) => {
@@ -417,7 +430,7 @@ export async function getYoutubePerformanceDashboard(
       cohortSummary,
       topRevenueVideos: sortByMetric(currentVideos.filteredRows, "estimatedRevenue").slice(0, VIDEO_TABLE_RESULT_LIMIT),
       topViewedVideos: sortByMetric(currentVideos.filteredRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
-      leastViewedRecentVideos: [...twoMonthRecentRowsWithViews]
+      leastViewedRecentVideos: [...publicTwoMonthRecentRowsWithViews]
         .sort((left, right) => left.views - right.views)
         .slice(0, VIDEO_TABLE_RESULT_LIMIT),
       oldVideoLeaders: sortByMetric(oldRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
@@ -437,11 +450,11 @@ export async function getYoutubeComparisonDashboard(
   rawFilters: YoutubeComparisonFilters,
   access?: ChannelAccess
 ): Promise<YoutubeComparisonDashboardData> {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const filters = { ...rawFilters };
 
   try {
-    const [allChannels, latestSync] = await Promise.all([getManagedChannels(supabase), getLatestSyncRun(supabase)]);
+    const [allChannels, latestSync] = await Promise.all([getManagedChannels(db), getLatestSyncRun(db)]);
     const channels = filterChannelsForAccess(allChannels, access);
     filters.channelId = resolveSelectedChannelId(filters.channelId, channels);
 
@@ -463,8 +476,8 @@ export async function getYoutubeComparisonDashboard(
     };
 
     const [primaryChannelRows, comparisonChannelRows] = await Promise.all([
-      getChannelMetrics(supabase, primaryRange.startDate, primaryRange.endDate, filters.channelId),
-      getChannelMetrics(supabase, comparisonRange.startDate, comparisonRange.endDate, filters.channelId)
+      getChannelMetrics(db, primaryRange.startDate, primaryRange.endDate, filters.channelId),
+      getChannelMetrics(db, comparisonRange.startDate, comparisonRange.endDate, filters.channelId)
     ]);
 
     const primaryChannelTotals = sumChannelMetrics(primaryChannelRows);
@@ -523,10 +536,10 @@ export async function getYoutubeComparisonDashboard(
     }
 
     const [primaryContentTypeRows, comparisonContentTypeRows, primaryVideos, comparisonVideos] = await Promise.all([
-      getContentTypeMetrics(supabase, primaryRange.startDate, primaryRange.endDate, filters.channelId),
-      getContentTypeMetrics(supabase, comparisonRange.startDate, comparisonRange.endDate, filters.channelId),
-      getVideoPerformanceRows(supabase, primaryRange.startDate, primaryRange.endDate, primaryVideoFilters, channels),
-      getVideoPerformanceRows(supabase, comparisonRange.startDate, comparisonRange.endDate, comparisonVideoFilters, channels)
+      getContentTypeMetrics(db, primaryRange.startDate, primaryRange.endDate, filters.channelId),
+      getContentTypeMetrics(db, comparisonRange.startDate, comparisonRange.endDate, filters.channelId),
+      getVideoPerformanceRows(db, primaryRange.startDate, primaryRange.endDate, primaryVideoFilters, channels),
+      getVideoPerformanceRows(db, comparisonRange.startDate, comparisonRange.endDate, comparisonVideoFilters, channels)
     ]);
 
     const primaryTotals = getScopedTotals(primaryVideoFilters, {
@@ -593,8 +606,8 @@ export async function getYoutubeComparisonDashboard(
   }
 }
 
-async function getManagedChannels(supabase: ReturnType<typeof createSupabaseAdminClient>) {
-  const { data, error } = await supabase
+async function getManagedChannels(db: ReturnType<typeof createDatabaseAdminClient>) {
+  const { data, error } = await db
     .from("youtube_managed_channels")
     .select("channel_id,title,thumbnail_url")
     .order("title", { ascending: true });
@@ -612,8 +625,8 @@ async function getManagedChannels(supabase: ReturnType<typeof createSupabaseAdmi
   return filterFocusedYouTubeChannels(channels);
 }
 
-async function getLatestMetricMonth(supabase: ReturnType<typeof createSupabaseAdminClient>, channelId: string) {
-  let query = supabase
+async function getLatestMetricMonth(db: ReturnType<typeof createDatabaseAdminClient>, channelId: string) {
+  let query = db
     .from("youtube_channel_daily_metrics")
     .select("day")
     .order("day", { ascending: false })
@@ -630,8 +643,32 @@ async function getLatestMetricMonth(supabase: ReturnType<typeof createSupabaseAd
   return row?.day ? row.day.slice(0, 7) : null;
 }
 
-async function getLatestSyncRun(supabase: ReturnType<typeof createSupabaseAdminClient>) {
-  const { data, error } = await supabase
+async function getLatestSyncRun(db: ReturnType<typeof createDatabaseAdminClient>) {
+  const latestLoginSync = await db
+    .from("youtube_login_sync_state")
+    .select("last_status,last_synced_at,last_error_message")
+    .order("last_synced_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (latestLoginSync.error && !isMissingLoginSyncStateTableError(latestLoginSync.error)) {
+    throw latestLoginSync.error;
+  }
+  const loginSyncRow = latestLoginSync.data as {
+    last_error_message: string | null;
+    last_status: string;
+    last_synced_at: string | null;
+  } | null;
+
+  if (loginSyncRow?.last_synced_at) {
+    return {
+      status: loginSyncRow.last_status,
+      finishedAt: loginSyncRow.last_synced_at,
+      errorMessage: loginSyncRow.last_error_message
+    };
+  }
+
+  const { data, error } = await db
     .from("youtube_analytics_sync_runs")
     .select("status,finished_at,error_message")
     .order("started_at", { ascending: false })
@@ -649,8 +686,24 @@ async function getLatestSyncRun(supabase: ReturnType<typeof createSupabaseAdminC
   };
 }
 
+function isMissingLoginSyncStateTableError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("youtube_login_sync_state") &&
+    (message.includes("does not exist") || message.includes("no such table"))
+  );
+}
+
+function isMissingPrivacyStatusColumnError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("privacy_status") &&
+    (message.includes("does not exist") || message.includes("no such column") || message.includes("no such field"))
+  );
+}
+
 async function getChannelMetrics(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   channelId: string
@@ -659,7 +712,7 @@ async function getChannelMetrics(
   let offset = 0;
 
   while (true) {
-    let query = supabase
+    let query = db
       .from("youtube_channel_daily_metrics")
       .select(
         "day,channel_id,views,estimated_minutes_watched,subscribers_gained,subscribers_lost,estimated_revenue,estimated_ad_revenue,gross_revenue,monetized_playbacks,ad_impressions,playback_based_cpm"
@@ -668,7 +721,7 @@ async function getChannelMetrics(
       .lt("day", endDate)
       .order("day", { ascending: true })
       .order("channel_id", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (channelId !== "all") {
       query = query.eq("channel_id", channelId);
@@ -678,15 +731,15 @@ async function getChannelMetrics(
     if (error) throw error;
 
     rows.push(...((data ?? []) as ChannelMetricRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;
 }
 
 async function getContentTypeMetrics(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   channelId: string
@@ -695,7 +748,7 @@ async function getContentTypeMetrics(
   let offset = 0;
 
   while (true) {
-    let query = supabase
+    let query = db
       .from("youtube_content_type_daily_metrics")
       .select(
         "day,channel_id,content_type,views,estimated_minutes_watched,estimated_revenue,estimated_ad_revenue,gross_revenue,monetized_playbacks"
@@ -705,7 +758,7 @@ async function getContentTypeMetrics(
       .order("day", { ascending: true })
       .order("channel_id", { ascending: true })
       .order("content_type", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (channelId !== "all") {
       query = query.eq("channel_id", channelId);
@@ -715,15 +768,15 @@ async function getContentTypeMetrics(
     if (error) throw error;
 
     rows.push(...((data ?? []) as ContentTypeMetricRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;
 }
 
 async function getCountryMetrics(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   channelId: string
@@ -732,7 +785,7 @@ async function getCountryMetrics(
   let offset = 0;
 
   while (true) {
-    let query = supabase
+    let query = db
       .from("youtube_country_daily_metrics")
       .select(
         "day,channel_id,country_code,views,estimated_minutes_watched,estimated_revenue,estimated_ad_revenue,gross_revenue,monetized_playbacks,ad_impressions,playback_based_cpm"
@@ -741,7 +794,7 @@ async function getCountryMetrics(
       .order("day", { ascending: true })
       .order("channel_id", { ascending: true })
       .order("country_code", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (channelId !== "all") {
       query = query.eq("channel_id", channelId);
@@ -754,30 +807,30 @@ async function getCountryMetrics(
     }
 
     rows.push(...((data ?? []) as CountryMetricRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;
 }
 
 async function getVideoPerformanceRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   filters: YoutubePerformanceFilters,
   channels: ManagedChannel[]
 ) {
-  const metrics = await getVideoMetricRows(supabase, startDate, endDate, filters.channelId);
+  const metrics = await getVideoMetricRows(db, startDate, endDate, filters.channelId);
   const metricVideoIds = Array.from(new Set(metrics.map((row) => row.video_id)));
   const recentWindow = getRecentVideoWindow(filters.month);
   const recentVideos = await getRecentCatalogVideos(
-    supabase,
+    db,
     recentWindow.startDate,
     recentWindow.endDate,
     filters.channelId
   );
-  const catalogRows = await getCatalogRows(supabase, unique([...metricVideoIds, ...recentVideos.map((row) => row.video_id)]));
+  const catalogRows = await getCatalogRows(db, unique([...metricVideoIds, ...recentVideos.map((row) => row.video_id)]));
   const catalogById = new Map(catalogRows.map((row) => [row.video_id, row]));
   const channelById = new Map(channels.map((channel) => [channel.channelId, channel.title]));
   const rowByVideoId = new Map<string, VideoPerformanceRow>();
@@ -812,7 +865,7 @@ async function getVideoPerformanceRows(
 }
 
 async function getCatalogRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   videoIds: string[]
 ): Promise<VideoCatalogRow[]> {
   const rows: VideoCatalogRow[] = [];
@@ -820,20 +873,27 @@ async function getCatalogRows(
   for (const ids of chunk(videoIds, 500)) {
     if (ids.length === 0) continue;
 
-    const { data, error } = await supabase
+    let { data, error } = await db
       .from("youtube_video_catalog")
-      .select("video_id,channel_id,title,thumbnail_url,published_at,content_type,duration_seconds")
+      .select(VIDEO_CATALOG_SELECT_COLUMNS)
       .in("video_id", ids);
 
+    if (error && isMissingPrivacyStatusColumnError(error)) {
+      ({ data, error } = await db
+        .from("youtube_video_catalog")
+        .select(LEGACY_VIDEO_CATALOG_SELECT_COLUMNS)
+        .in("video_id", ids));
+    }
+
     if (error) throw error;
-    rows.push(...((data ?? []) as VideoCatalogRow[]));
+    rows.push(...normalizeVideoCatalogRows(data));
   }
 
   return rows;
 }
 
 async function getVideoMetricRows(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   channelId: string
@@ -842,7 +902,7 @@ async function getVideoMetricRows(
   let offset = 0;
 
   while (true) {
-    let query = supabase
+    let query = db
       .from("youtube_video_daily_metrics")
       .select(
         "day,channel_id,video_id,views,estimated_minutes_watched,estimated_revenue,estimated_ad_revenue,gross_revenue,monetized_playbacks,ad_impressions,playback_based_cpm"
@@ -851,7 +911,7 @@ async function getVideoMetricRows(
       .order("day", { ascending: true })
       .order("channel_id", { ascending: true })
       .order("video_id", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (channelId !== "all") {
       query = query.eq("channel_id", channelId);
@@ -861,15 +921,15 @@ async function getVideoMetricRows(
     if (error) throw error;
 
     rows.push(...((data ?? []) as VideoMetricRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;
 }
 
 async function getRecentCatalogVideos(
-  supabase: ReturnType<typeof createSupabaseAdminClient>,
+  db: ReturnType<typeof createDatabaseAdminClient>,
   startDate: string,
   endDate: string,
   channelId: string
@@ -878,28 +938,54 @@ async function getRecentCatalogVideos(
   let offset = 0;
 
   while (true) {
-    let query = supabase
+    let query = db
       .from("youtube_video_catalog")
-      .select("video_id,channel_id,title,thumbnail_url,published_at,content_type,duration_seconds")
+      .select(VIDEO_CATALOG_SELECT_COLUMNS)
       .gte("published_at", `${startDate}T00:00:00.000Z`)
       .lt("published_at", `${endDate}T00:00:00.000Z`)
       .order("published_at", { ascending: true })
       .order("video_id", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (channelId !== "all") {
       query = query.eq("channel_id", channelId);
     }
 
-    const { data, error } = await query;
+    let { data, error } = await query;
+    if (error && isMissingPrivacyStatusColumnError(error)) {
+      query = db
+        .from("youtube_video_catalog")
+        .select(LEGACY_VIDEO_CATALOG_SELECT_COLUMNS)
+        .gte("published_at", `${startDate}T00:00:00.000Z`)
+        .lt("published_at", `${endDate}T00:00:00.000Z`)
+        .order("published_at", { ascending: true })
+        .order("video_id", { ascending: true })
+        .range(offset, offset + DB_PAGE_SIZE - 1);
+
+      if (channelId !== "all") {
+        query = query.eq("channel_id", channelId);
+      }
+
+      ({ data, error } = await query);
+    }
+
     if (error) throw error;
 
-    rows.push(...((data ?? []) as VideoCatalogRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    rows.push(...normalizeVideoCatalogRows(data));
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;
+}
+
+function normalizeVideoCatalogRows(data: unknown): VideoCatalogRow[] {
+  return ((data ?? []) as Array<Omit<VideoCatalogRow, "privacy_status"> & { privacy_status?: string | null }>).map(
+    (row) => ({
+      ...row,
+      privacy_status: normalizeVideoPrivacyStatus(row.privacy_status)
+    })
+  );
 }
 
 function createVideoPerformanceRow(
@@ -918,6 +1004,7 @@ function createVideoPerformanceRow(
     thumbnailUrl: catalog?.thumbnail_url ?? null,
     publishedAt: catalog?.published_at ?? null,
     contentType: resolveVideoContentType(catalog?.content_type, toNumber(catalog?.duration_seconds)),
+    privacyStatus: normalizeVideoPrivacyStatus(catalog?.privacy_status),
     cohort: getVideoCohort(catalog?.published_at ?? null, selectedMonth)
   };
 }

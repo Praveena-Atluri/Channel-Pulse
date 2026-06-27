@@ -1,4 +1,4 @@
-import { createSupabaseAdminClient } from "@/lib/supabase";
+import { createDatabaseAdminClient } from "@/lib/database";
 import { ensureYoutubeAnalyticsRangeData } from "@/lib/youtube-auto-sync";
 import type { StoredYoutubeManagedChannel } from "@/lib/youtube-managed-channels";
 import { calculateNetSubscribers, type VideoContentType } from "@/lib/youtube-performance-utils";
@@ -113,7 +113,7 @@ const COMPARISON_METRICS: WeeklyComparisonMetric[] = [
   "estimatedRevenue",
   "rpm"
 ];
-const SUPABASE_PAGE_SIZE = 1000;
+const DB_PAGE_SIZE = 1000;
 const WEEKLY_SYNC_OPTIONS = {
   postSyncCheckAttempts: 1,
   throwOnIncomplete: false
@@ -581,13 +581,13 @@ async function getChannelMetricRowsWithColumns(
   endDate: string,
   includeCtr: boolean
 ) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const rows: ChannelMetricRow[] = [];
   let offset = 0;
   const ctrColumn = includeCtr ? ",impressions_click_through_rate" : "";
 
   while (true) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from("youtube_channel_daily_metrics")
       .select(
         `channel_id,day,views,estimated_minutes_watched,subscribers_gained,subscribers_lost,estimated_revenue,monetized_playbacks,ad_impressions,playback_based_cpm${ctrColumn}`
@@ -596,12 +596,12 @@ async function getChannelMetricRowsWithColumns(
       .gte("day", startDate)
       .lte("day", endDate)
       .order("channel_id", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (error) throw error;
     rows.push(...((data ?? []) as ChannelMetricRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;
@@ -643,25 +643,25 @@ async function getPublishedVideoCounts(
 }
 
 async function getPublishedVideoRows(channelIds: string[], startDate: string, endDate: string) {
-  const supabase = createSupabaseAdminClient();
+  const db = createDatabaseAdminClient();
   const rows: PublishedVideoRow[] = [];
   const exclusiveEndDate = addDaysToDate(endDate, 1);
   let offset = 0;
 
   while (true) {
-    const { data, error } = await supabase
+    const { data, error } = await db
       .from("youtube_video_catalog")
       .select("video_id,channel_id,content_type,published_at")
       .in("channel_id", channelIds)
       .gte("published_at", `${startDate}T00:00:00.000Z`)
       .lt("published_at", `${exclusiveEndDate}T00:00:00.000Z`)
       .order("published_at", { ascending: true })
-      .range(offset, offset + SUPABASE_PAGE_SIZE - 1);
+      .range(offset, offset + DB_PAGE_SIZE - 1);
 
     if (error) throw error;
     rows.push(...((data ?? []) as PublishedVideoRow[]));
-    if (!data || data.length < SUPABASE_PAGE_SIZE) break;
-    offset += SUPABASE_PAGE_SIZE;
+    if (!data || data.length < DB_PAGE_SIZE) break;
+    offset += DB_PAGE_SIZE;
   }
 
   return rows;
