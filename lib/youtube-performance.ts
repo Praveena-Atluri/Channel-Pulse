@@ -125,6 +125,7 @@ export type YoutubeComparisonDashboardData = {
     comparisonRevenue: number;
     revenueDelta: number;
   }>;
+  channelBreakdown: ComparisonChannelBreakdownRow[];
   topViewedRangeOneVideos: VideoPerformanceRow[];
   topViewedRangeTwoVideos: VideoPerformanceRow[];
   topRevenueRangeOneVideos: VideoPerformanceRow[];
@@ -152,6 +153,20 @@ export type ComparisonDelta = {
   previous: number;
   absolute: number;
   percent: number;
+};
+
+export type ComparisonChannelBreakdownRow = {
+  channelId: string;
+  title: string;
+  thumbnailUrl: string | null;
+  primary: MetricTotals;
+  comparison: MetricTotals;
+  deltas: {
+    views: ComparisonDelta;
+    watchTime: ComparisonDelta;
+    subscribers: ComparisonDelta;
+    revenue: ComparisonDelta;
+  };
 };
 
 type ChannelMetricRow = {
@@ -527,6 +542,14 @@ export async function getYoutubeComparisonDashboard(
         },
         availableContentTypes: ["short", "long"],
         contentTypeComparison: [],
+        channelBreakdown: buildComparisonChannelBreakdown({
+          channels,
+          filters,
+          primaryChannelRows,
+          comparisonChannelRows,
+          primaryContentTypeRows: [],
+          comparisonContentTypeRows: []
+        }),
         topViewedRangeOneVideos: [],
         topViewedRangeTwoVideos: [],
         topRevenueRangeOneVideos: [],
@@ -535,11 +558,16 @@ export async function getYoutubeComparisonDashboard(
       };
     }
 
+    const shouldLoadVideoLeaderboards = filters.channelId !== "all";
     const [primaryContentTypeRows, comparisonContentTypeRows, primaryVideos, comparisonVideos] = await Promise.all([
       getContentTypeMetrics(db, primaryRange.startDate, primaryRange.endDate, filters.channelId),
       getContentTypeMetrics(db, comparisonRange.startDate, comparisonRange.endDate, filters.channelId),
-      getVideoPerformanceRows(db, primaryRange.startDate, primaryRange.endDate, primaryVideoFilters, channels),
-      getVideoPerformanceRows(db, comparisonRange.startDate, comparisonRange.endDate, comparisonVideoFilters, channels)
+      shouldLoadVideoLeaderboards
+        ? getVideoPerformanceRows(db, primaryRange.startDate, primaryRange.endDate, primaryVideoFilters, channels)
+        : Promise.resolve(emptyVideoPerformanceRows()),
+      shouldLoadVideoLeaderboards
+        ? getVideoPerformanceRows(db, comparisonRange.startDate, comparisonRange.endDate, comparisonVideoFilters, channels)
+        : Promise.resolve(emptyVideoPerformanceRows())
     ]);
 
     const primaryTotals = getScopedTotals(primaryVideoFilters, {
@@ -588,6 +616,14 @@ export async function getYoutubeComparisonDashboard(
       },
       availableContentTypes: buildAvailableContentTypes([...primaryContentTypeRows, ...comparisonContentTypeRows]),
       contentTypeComparison: buildContentTypeComparison(primaryContentTypeRows, comparisonContentTypeRows, filters),
+      channelBreakdown: buildComparisonChannelBreakdown({
+        channels,
+        filters,
+        primaryChannelRows,
+        comparisonChannelRows,
+        primaryContentTypeRows,
+        comparisonContentTypeRows
+      }),
       topViewedRangeOneVideos: sortByMetric(primaryVideos.filteredRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
       topViewedRangeTwoVideos: sortByMetric(comparisonVideos.filteredRows, "views").slice(0, VIDEO_TABLE_RESULT_LIMIT),
       topRevenueRangeOneVideos: sortByMetric(primaryVideos.filteredRows, "estimatedRevenue").slice(
@@ -864,6 +900,13 @@ async function getVideoPerformanceRows(
   return { allRows, filteredRows };
 }
 
+function emptyVideoPerformanceRows() {
+  return {
+    allRows: [] as VideoPerformanceRow[],
+    filteredRows: [] as VideoPerformanceRow[]
+  };
+}
+
 async function getCatalogRows(
   db: ReturnType<typeof createDatabaseAdminClient>,
   videoIds: string[]
@@ -1012,18 +1055,7 @@ function createVideoPerformanceRow(
 function sumChannelMetrics(rows: ChannelMetricRow[]) {
   const totals = createEmptyTotals();
   for (const row of rows) {
-    addMetricTotals(totals, {
-      views: toNumber(row.views),
-      estimatedMinutesWatched: toNumber(row.estimated_minutes_watched),
-      subscribersGained: toNumber(row.subscribers_gained),
-      subscribersLost: toNumber(row.subscribers_lost),
-      estimatedRevenue: toNumber(row.estimated_revenue),
-      estimatedAdRevenue: toNumber(row.estimated_ad_revenue),
-      grossRevenue: toNumber(row.gross_revenue),
-      monetizedPlaybacks: toNumber(row.monetized_playbacks),
-      adImpressions: toNumber(row.ad_impressions),
-      playbackBasedCpm: toNumber(row.playback_based_cpm)
-    });
+    addMetricTotals(totals, channelMetricToTotals(row));
   }
 
   return totals;
@@ -1110,6 +1142,32 @@ function metricToTotals(row: VideoMetricRow): Partial<MetricTotals> {
   };
 }
 
+function channelMetricToTotals(row: ChannelMetricRow): Partial<MetricTotals> {
+  return {
+    views: toNumber(row.views),
+    estimatedMinutesWatched: toNumber(row.estimated_minutes_watched),
+    subscribersGained: toNumber(row.subscribers_gained),
+    subscribersLost: toNumber(row.subscribers_lost),
+    estimatedRevenue: toNumber(row.estimated_revenue),
+    estimatedAdRevenue: toNumber(row.estimated_ad_revenue),
+    grossRevenue: toNumber(row.gross_revenue),
+    monetizedPlaybacks: toNumber(row.monetized_playbacks),
+    adImpressions: toNumber(row.ad_impressions),
+    playbackBasedCpm: toNumber(row.playback_based_cpm)
+  };
+}
+
+function contentTypeMetricToTotals(row: ContentTypeMetricRow): Partial<MetricTotals> {
+  return {
+    views: toNumber(row.views),
+    estimatedMinutesWatched: toNumber(row.estimated_minutes_watched),
+    estimatedRevenue: toNumber(row.estimated_revenue),
+    estimatedAdRevenue: toNumber(row.estimated_ad_revenue),
+    grossRevenue: toNumber(row.gross_revenue),
+    monetizedPlaybacks: toNumber(row.monetized_playbacks)
+  };
+}
+
 function buildContentTypeSplit(rows: ContentTypeMetricRow[], filters: YoutubePerformanceFilters) {
   const split = new Map<VideoContentType, { contentType: VideoContentType; views: number; revenue: number }>();
 
@@ -1153,6 +1211,104 @@ function buildCountryRevenueBreakdown(rows: CountryMetricRow[]) {
   }
 
   return Array.from(countries.values()).sort((left, right) => right.estimatedRevenue - left.estimatedRevenue);
+}
+
+function buildComparisonChannelBreakdown({
+  channels,
+  filters,
+  primaryChannelRows,
+  comparisonChannelRows,
+  primaryContentTypeRows,
+  comparisonContentTypeRows
+}: {
+  channels: ManagedChannel[];
+  filters: YoutubeComparisonFilters;
+  primaryChannelRows: ChannelMetricRow[];
+  comparisonChannelRows: ChannelMetricRow[];
+  primaryContentTypeRows: ContentTypeMetricRow[];
+  comparisonContentTypeRows: ContentTypeMetricRow[];
+}): ComparisonChannelBreakdownRow[] {
+  const primaryChannelTotalsById = buildChannelTotalsByChannelId(primaryChannelRows);
+  const comparisonChannelTotalsById = buildChannelTotalsByChannelId(comparisonChannelRows);
+  const primaryContentTotalsById = buildContentTypeTotalsByChannelId(primaryContentTypeRows, filters.contentType);
+  const comparisonContentTotalsById = buildContentTypeTotalsByChannelId(comparisonContentTypeRows, filters.contentType);
+
+  return channels
+    .map((channel) => {
+      const primaryChannelTotals = primaryChannelTotalsById.get(channel.channelId) ?? createEmptyTotals();
+      const comparisonChannelTotals = comparisonChannelTotalsById.get(channel.channelId) ?? createEmptyTotals();
+      const primary = getChannelBreakdownScopedTotals({
+        channelTotals: primaryChannelTotals,
+        contentTotals: primaryContentTotalsById.get(channel.channelId) ?? createEmptyTotals(),
+        contentType: filters.contentType
+      });
+      const comparison = getChannelBreakdownScopedTotals({
+        channelTotals: comparisonChannelTotals,
+        contentTotals: comparisonContentTotalsById.get(channel.channelId) ?? createEmptyTotals(),
+        contentType: filters.contentType
+      });
+
+      return {
+        channelId: channel.channelId,
+        title: channel.title,
+        thumbnailUrl: channel.thumbnailUrl,
+        primary,
+        comparison,
+        deltas: {
+          views: buildComparisonDelta(primary.views, comparison.views),
+          watchTime: buildComparisonDelta(primary.estimatedMinutesWatched, comparison.estimatedMinutesWatched),
+          subscribers: buildComparisonDelta(calculateNetSubscribers(primary), calculateNetSubscribers(comparison)),
+          revenue: buildComparisonDelta(primary.estimatedRevenue, comparison.estimatedRevenue)
+        }
+      };
+    })
+    .sort((left, right) => right.primary.views + right.comparison.views - (left.primary.views + left.comparison.views));
+}
+
+function buildChannelTotalsByChannelId(rows: ChannelMetricRow[]) {
+  const map = new Map<string, MetricTotals>();
+
+  for (const row of rows) {
+    const totals = map.get(row.channel_id) ?? createEmptyTotals();
+    addMetricTotals(totals, channelMetricToTotals(row));
+    map.set(row.channel_id, totals);
+  }
+
+  return map;
+}
+
+function buildContentTypeTotalsByChannelId(rows: ContentTypeMetricRow[], contentTypeFilter: ContentTypeFilter) {
+  const map = new Map<string, MetricTotals>();
+
+  for (const row of rows) {
+    if (contentTypeFilter !== "all" && row.content_type !== contentTypeFilter) continue;
+
+    const totals = map.get(row.channel_id) ?? createEmptyTotals();
+    addMetricTotals(totals, contentTypeMetricToTotals(row));
+    map.set(row.channel_id, totals);
+  }
+
+  return map;
+}
+
+function getChannelBreakdownScopedTotals({
+  channelTotals,
+  contentTotals,
+  contentType
+}: {
+  channelTotals: MetricTotals;
+  contentTotals: MetricTotals;
+  contentType: ContentTypeFilter;
+}) {
+  if (contentType === "all") {
+    return fillMissingChannelTotals(channelTotals, contentTotals);
+  }
+
+  return {
+    ...contentTotals,
+    subscribersGained: channelTotals.subscribersGained,
+    subscribersLost: channelTotals.subscribersLost
+  };
 }
 
 function buildContentTypeComparison(
@@ -1385,6 +1541,7 @@ function emptyComparisonDashboard(filters: YoutubeComparisonFilters): YoutubeCom
     },
     availableContentTypes: ["short", "long"],
     contentTypeComparison: [],
+    channelBreakdown: [],
     topViewedRangeOneVideos: [],
     topViewedRangeTwoVideos: [],
     topRevenueRangeOneVideos: [],
@@ -1394,6 +1551,7 @@ function emptyComparisonDashboard(filters: YoutubeComparisonFilters): YoutubeCom
 }
 
 function resolveSelectedChannelId(channelId: string, channels: ManagedChannel[]) {
+  if (channelId === "all") return "all";
   if (channels.some((channel) => channel.channelId === channelId)) return channelId;
   if (channels.some((channel) => channel.channelId === DEFAULT_YOUTUBE_CHANNEL_ID)) {
     return DEFAULT_YOUTUBE_CHANNEL_ID;

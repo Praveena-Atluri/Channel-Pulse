@@ -18,6 +18,7 @@ type YoutubeChannelSelectProps = {
   channels: ManagedChannel[];
   canRefreshChannels?: boolean;
   disabled?: boolean;
+  includeAllOption?: boolean;
 };
 
 export function YoutubeChannelSelect({
@@ -25,7 +26,8 @@ export function YoutubeChannelSelect({
   value,
   channels: initialChannels,
   canRefreshChannels = true,
-  disabled = false
+  disabled = false,
+  includeAllOption = false
 }: YoutubeChannelSelectProps) {
   const [channels, setChannels] = useState(initialChannels);
   const [selectedValue, setSelectedValue] = useState(value);
@@ -39,8 +41,8 @@ export function YoutubeChannelSelect({
   }, [initialChannels]);
 
   useEffect(() => {
-    setSelectedValue(resolveSelectedValue(value, channels));
-  }, [channels, value]);
+    setSelectedValue(resolveSelectedValue(value, channels, includeAllOption));
+  }, [channels, includeAllOption, value]);
 
   const refreshChannels = () => {
     if (disabled || isPending) return;
@@ -60,7 +62,7 @@ export function YoutubeChannelSelect({
       }
 
       setChannels(payload.channels ?? []);
-      setSelectedValue((current) => resolveSelectedValue(current, payload.channels ?? []));
+      setSelectedValue((current) => resolveSelectedValue(current, payload.channels ?? [], includeAllOption));
       setHasRefreshed(true);
       setMessage(`${payload.channelCount ?? payload.channels?.length ?? 0} channels loaded.`);
     });
@@ -98,6 +100,7 @@ export function YoutubeChannelSelect({
         value={selectedValue}
       >
         {channels.length === 0 ? <option value="">Refresh channels</option> : null}
+        {includeAllOption && channels.length > 0 ? <option value="all">All channels</option> : null}
         {channels.map((channel) => (
           <option key={channel.channelId} value={channel.channelId}>
             {channel.title}
@@ -109,7 +112,9 @@ export function YoutubeChannelSelect({
   );
 }
 
-function resolveSelectedValue(value: string, channels: ManagedChannel[]) {
+function resolveSelectedValue(value: string, channels: ManagedChannel[], includeAllOption: boolean) {
+  if (includeAllOption && value === "all") return "all";
   if (channels.some((channel) => channel.channelId === value)) return value;
+  if (includeAllOption && channels.length > 0) return "all";
   return channels[0]?.channelId ?? "";
 }

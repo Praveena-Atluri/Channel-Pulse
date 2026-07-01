@@ -6,6 +6,7 @@ import {
   DollarSign,
   Eye,
   Film,
+  PieChart,
   Users
 } from "lucide-react";
 import Link from "next/link";
@@ -15,6 +16,7 @@ import { AppLogo } from "@/components/app-logo";
 import { CompareFilterChangeBoundary } from "@/components/compare-filter-change-boundary";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { LogoutButton } from "@/components/logout-button";
+import { ReportDownloadButton } from "@/components/report-download-button";
 import { YoutubeChannelSelect } from "@/components/youtube-channel-select";
 import { YoutubePdfDownloadButton } from "@/components/youtube-pdf-download-button";
 import { YoutubeSubmitButton } from "@/components/youtube-submit-button";
@@ -23,6 +25,7 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { canAccountViewRevenue, getAccountChannelAccess, isAuthConfigured } from "@/lib/auth";
+import { CHANNEL_COMPARE_COLUMN_IDS } from "@/lib/channel-compare-report";
 import { isLoginSyncFresh } from "@/lib/login-sync-utils";
 import { requireCurrentAccount } from "@/lib/server-auth";
 import { ensureYoutubeAnalyticsRangeData, getIncompleteYoutubeAnalyticsChannelIds } from "@/lib/youtube-auto-sync";
@@ -30,11 +33,12 @@ import { isYouTubeCmsConfigured } from "@/lib/youtube-cms-api";
 import {
   getYoutubeComparisonDashboard,
   normalizeYoutubeComparisonFilters,
+  type ComparisonChannelBreakdownRow,
   type ComparisonDelta,
   type ContentTypeFilter,
   type VideoPerformanceRow
 } from "@/lib/youtube-performance";
-import { type MetricTotals } from "@/lib/youtube-performance-utils";
+import { calculateNetSubscribers, type MetricTotals } from "@/lib/youtube-performance-utils";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +52,19 @@ type YoutubeComparisonPageProps = {
     comparisonEndDate?: string;
   }>;
 };
+
+const CHANNEL_CHART_COLORS = [
+  "#2563eb",
+  "#0f766e",
+  "#f59e0b",
+  "#dc2626",
+  "#7c3aed",
+  "#0891b2",
+  "#65a30d",
+  "#db2777",
+  "#475569",
+  "#ea580c"
+];
 
 export default async function YoutubeComparisonPage({ searchParams }: YoutubeComparisonPageProps) {
   const params = await searchParams;
@@ -91,9 +108,20 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
     }
   }
   const selectedChannel = dashboard.channels.find((channel) => channel.channelId === dashboard.filters.channelId);
+  const channelLabel = dashboard.filters.channelId === "all" ? "All channels" : selectedChannel?.title ?? "Selected channel";
+  const reportChannels = getDashboardSyncChannels(dashboard.filters.channelId, dashboard.channels);
+  const compareReportHref = buildCompareReportHref({
+    channels: reportChannels,
+    comparisonEndDate: dashboard.filters.comparisonEndDate,
+    comparisonStartDate: dashboard.filters.comparisonStartDate,
+    primaryEndDate: dashboard.filters.primaryEndDate,
+    primaryStartDate: dashboard.filters.primaryStartDate
+  });
   const canEvaluateDataCoverage = dashboard.schemaReady && cmsConfigured;
   const hasComparisonData = canEvaluateDataCoverage && dashboard.primary.hasData && dashboard.comparison.hasData;
   const canShowComparisonData = hasComparisonData && !autoSyncError;
+  const canShowVideoLeaderboards = dashboard.filters.channelId !== "all";
+  const canShowChannelBreakdown = dashboard.filters.channelId === "all" && dashboard.channelBreakdown.length > 0;
   const dashboardRenderKey = [
     dashboard.filters.primaryStartDate,
     dashboard.filters.primaryEndDate,
@@ -124,7 +152,7 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
                 {formatRangeLabel(dashboard.comparison.startDate, dashboard.comparison.endDate)}
               </p>
               <p className="mt-1 text-xs font-semibold text-muted-foreground">
-                {selectedChannel?.title ?? "Selected channel"} | {contentTypeLabel(dashboard.filters.contentType)}
+                {channelLabel} | {contentTypeLabel(dashboard.filters.contentType)}
               </p>
               <p className="mt-1 text-xs font-semibold text-muted-foreground">
                 Last updated: {formatLastUpdatedLabel(dashboard.latestSync?.finishedAt)}
@@ -133,9 +161,17 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
           </div>
 
           <div className="youtube-print-hidden flex items-center gap-2">
+            {canViewRevenue ? (
+              <ReportDownloadButton
+                disabled={!dashboard.schemaReady || !cmsConfigured || reportChannels.length === 0}
+                href={compareReportHref}
+                idleLabel="Download Compare Excel"
+                loadingLabel="Syncing data from YouTube..."
+              />
+            ) : null}
             {canShowComparisonData ? (
               <YoutubePdfDownloadButton
-                filename={`youtube-compare-${dashboard.primary.startDate}-to-${dashboard.primary.endDate}-vs-${dashboard.comparison.startDate}-to-${dashboard.comparison.endDate}-${slugify(selectedChannel?.title ?? "channel")}`}
+                filename={`youtube-compare-${dashboard.primary.startDate}-to-${dashboard.primary.endDate}-vs-${dashboard.comparison.startDate}-to-${dashboard.comparison.endDate}-${slugify(channelLabel)}`}
               />
             ) : null}
             <Link
@@ -187,6 +223,7 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
                     canRefreshChannels={account.role === "admin"}
                     channels={dashboard.channels}
                     disabled={!dashboard.schemaReady || !cmsConfigured}
+                    includeAllOption
                     name="channel"
                     value={dashboard.filters.channelId}
                   />
@@ -272,20 +309,29 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
               </section>
             )}
 
-            <section className="youtube-report-two-col youtube-compare-video-section grid gap-4 xl:grid-cols-2">
-              <VideoTable
-                title="Top Viewed Videos In Range 1"
-                rows={toVideoTableRows(dashboard.topViewedRangeOneVideos, "views")}
-                metric="views"
-              />
-              <VideoTable
-                title="Top Viewed Videos In Range 2"
-                rows={toVideoTableRows(dashboard.topViewedRangeTwoVideos, "views")}
-                metric="views"
-              />
-            </section>
+            {canShowChannelBreakdown ? (
+              <>
+                <ChannelAnalyticsCharts rows={dashboard.channelBreakdown} canViewRevenue={canViewRevenue} />
+                <ChannelBreakdownTable rows={dashboard.channelBreakdown} canViewRevenue={canViewRevenue} />
+              </>
+            ) : null}
 
-            {canViewRevenue ? (
+            {canShowVideoLeaderboards ? (
+              <section className="youtube-report-two-col youtube-compare-video-section grid gap-4 xl:grid-cols-2">
+                <VideoTable
+                  title="Top Viewed Videos In Range 1"
+                  rows={toVideoTableRows(dashboard.topViewedRangeOneVideos, "views")}
+                  metric="views"
+                />
+                <VideoTable
+                  title="Top Viewed Videos In Range 2"
+                  rows={toVideoTableRows(dashboard.topViewedRangeTwoVideos, "views")}
+                  metric="views"
+                />
+              </section>
+            ) : null}
+
+            {canShowVideoLeaderboards && canViewRevenue ? (
               <section className="youtube-report-two-col youtube-compare-video-section grid gap-4 xl:grid-cols-2">
                 <VideoTable
                   title="Top Revenue Videos In Range 1"
@@ -305,6 +351,431 @@ export default async function YoutubeComparisonPage({ searchParams }: YoutubeCom
         </CompareFilterChangeBoundary>
       </div>
     </main>
+  );
+}
+
+function ChannelAnalyticsCharts({
+  rows,
+  canViewRevenue
+}: {
+  rows: ComparisonChannelBreakdownRow[];
+  canViewRevenue: boolean;
+}) {
+  const pieMetrics = [
+    {
+      formatter: formatCompactNumber,
+      getValue: (row: ComparisonChannelBreakdownRow) => row.primary.views,
+      title: "Range 1 View Share"
+    },
+    {
+      formatter: formatCompactNumber,
+      getValue: (row: ComparisonChannelBreakdownRow) => row.comparison.views,
+      title: "Range 2 View Share"
+    },
+    ...(canViewRevenue
+      ? [
+          {
+            formatter: formatCurrency,
+            getValue: (row: ComparisonChannelBreakdownRow) => row.primary.estimatedRevenue,
+            title: "Range 1 Revenue Share"
+          },
+          {
+            formatter: formatCurrency,
+            getValue: (row: ComparisonChannelBreakdownRow) => row.comparison.estimatedRevenue,
+            title: "Range 2 Revenue Share"
+          }
+        ]
+      : [])
+  ];
+
+  return (
+    <section className="grid gap-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <BarChart3 className="size-4 text-primary" />
+        <h2 className="text-base font-black">Channel Analytics</h2>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        {pieMetrics.map((metric) => (
+          <ChannelSharePieChart
+            formatter={metric.formatter}
+            getValue={metric.getValue}
+            key={metric.title}
+            rows={rows}
+            title={metric.title}
+          />
+        ))}
+      </div>
+
+      <ChannelMetricsByChannel rows={rows} canViewRevenue={canViewRevenue} />
+    </section>
+  );
+}
+
+function ChannelMetricsByChannel({
+  rows,
+  canViewRevenue
+}: {
+  rows: ComparisonChannelBreakdownRow[];
+  canViewRevenue: boolean;
+}) {
+  return (
+    <div className="grid gap-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <BarChart3 className="size-4 text-primary" />
+        <h3 className="text-base font-black">Each Channel</h3>
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        {rows.map((row) => {
+          const metrics = [
+            {
+              delta: row.deltas.views.absolute,
+              deltaFormatter: formatSignedCompactNumber,
+              formatter: formatCompactNumber,
+              icon: Eye,
+              label: "Views",
+              primary: row.primary.views,
+              comparison: row.comparison.views
+            },
+            {
+              delta: row.deltas.watchTime.absolute / 60,
+              deltaFormatter: formatSignedCompactNumber,
+              formatter: formatCompactNumber,
+              icon: Clock3,
+              label: "Watch hours",
+              primary: row.primary.estimatedMinutesWatched / 60,
+              comparison: row.comparison.estimatedMinutesWatched / 60
+            },
+            {
+              delta: row.deltas.subscribers.absolute,
+              deltaFormatter: formatSignedCompactNumber,
+              formatter: formatSignedCompactNumber,
+              icon: Users,
+              label: "Net subscribers",
+              primary: calculateNetSubscribers(row.primary),
+              comparison: calculateNetSubscribers(row.comparison)
+            },
+            ...(canViewRevenue
+              ? [
+                  {
+                    delta: row.deltas.revenue.absolute,
+                    deltaFormatter: formatSignedCurrency,
+                    formatter: formatCurrency,
+                    icon: DollarSign,
+                    label: "Revenue",
+                    primary: row.primary.estimatedRevenue,
+                    comparison: row.comparison.estimatedRevenue
+                  }
+                ]
+              : [])
+          ];
+
+          return (
+            <Card className="shadow-sm" key={row.channelId}>
+              <CardHeader>
+                <CardTitle className="line-clamp-2 text-base">{row.title}</CardTitle>
+              </CardHeader>
+              <CardContent className={canViewRevenue ? "grid gap-3 md:grid-cols-2" : "grid gap-3 lg:grid-cols-3"}>
+                {metrics.map((metric) => (
+                  <ChannelMetricBlock
+                    comparison={metric.comparison}
+                    delta={metric.delta}
+                    deltaFormatter={metric.deltaFormatter}
+                    formatter={metric.formatter}
+                    icon={metric.icon}
+                    key={metric.label}
+                    label={metric.label}
+                    primary={metric.primary}
+                  />
+                ))}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ChannelMetricBlock({
+  comparison,
+  delta,
+  deltaFormatter,
+  formatter,
+  icon: Icon,
+  label,
+  primary
+}: {
+  comparison: number;
+  delta: number;
+  deltaFormatter: (value: number) => string;
+  formatter: (value: number) => string;
+  icon: typeof Eye;
+  label: string;
+  primary: number;
+}) {
+  const maxValue = Math.max(Math.abs(primary), Math.abs(comparison), 1);
+
+  return (
+    <div className="rounded-md border bg-background/70 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Icon className="size-4 shrink-0 text-primary" />
+          <span className="truncate text-sm font-black">{label}</span>
+        </div>
+        <span className={`whitespace-nowrap text-xs font-black tabular-nums ${getSignedMetricClass(delta)}`}>
+          {deltaFormatter(delta)}
+        </span>
+      </div>
+
+      <div className="mt-3 grid gap-1.5">
+        <ChannelMetricRangeBar
+          className={primary < 0 ? "bg-red-500" : "bg-primary"}
+          label="Range 1"
+          maxValue={maxValue}
+          value={primary}
+          valueLabel={formatter(primary)}
+        />
+        <ChannelMetricRangeBar
+          className={comparison < 0 ? "bg-red-500" : "bg-emerald-500"}
+          label="Range 2"
+          maxValue={maxValue}
+          value={comparison}
+          valueLabel={formatter(comparison)}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ChannelMetricRangeBar({
+  className,
+  label,
+  maxValue,
+  value,
+  valueLabel
+}: {
+  className: string;
+  label: string;
+  maxValue: number;
+  value: number;
+  valueLabel: string;
+}) {
+  const width = value === 0 ? 0 : Math.max(2, Math.round((Math.abs(value) / maxValue) * 100));
+
+  return (
+    <div className="grid grid-cols-[4rem_minmax(0,1fr)_6.75rem] items-center gap-2 text-xs">
+      <span className="font-semibold text-muted-foreground">{label}</span>
+      <div className="h-2.5 overflow-hidden rounded-full bg-muted">
+        <div className={`h-full rounded-full ${className}`} style={{ width: `${width}%` }} />
+      </div>
+      <span className="whitespace-nowrap text-right font-black tabular-nums text-foreground">{valueLabel}</span>
+    </div>
+  );
+}
+
+function ChannelSharePieChart({
+  formatter,
+  getValue,
+  rows,
+  title
+}: {
+  formatter: (value: number) => string;
+  getValue: (row: ComparisonChannelBreakdownRow) => number;
+  rows: ComparisonChannelBreakdownRow[];
+  title: string;
+}) {
+  const chartRows = rows
+    .map((row) => ({
+      channelId: row.channelId,
+      title: row.title,
+      value: Math.max(0, getValue(row))
+    }))
+    .sort((left, right) => right.value - left.value);
+  const positiveRows = chartRows.filter((row) => row.value > 0);
+  const total = chartRows.reduce((sum, row) => sum + row.value, 0);
+  const radius = 54;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+
+  return (
+    <Card className="shadow-sm">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <PieChart className="size-4 text-primary" />
+          {title}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="grid gap-4 sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:items-center">
+        <div className="relative mx-auto size-36">
+          <svg className="size-36 -rotate-90" viewBox="0 0 140 140" role="img" aria-label={title}>
+            <circle cx="70" cy="70" fill="none" r={radius} stroke="currentColor" strokeWidth="18" className="text-muted" />
+            {total > 0
+              ? positiveRows.map((row, index) => {
+                  const segmentLength = (row.value / total) * circumference;
+                  const segment = (
+                    <circle
+                      cx="70"
+                      cy="70"
+                      fill="none"
+                      key={row.channelId}
+                      r={radius}
+                      stroke={getChannelChartColor(index)}
+                      strokeDasharray={`${segmentLength} ${circumference - segmentLength}`}
+                      strokeDashoffset={-offset}
+                      strokeLinecap="butt"
+                      strokeWidth="18"
+                    />
+                  );
+                  offset += segmentLength;
+                  return segment;
+                })
+              : null}
+          </svg>
+          <div className="absolute inset-0 grid place-items-center text-center">
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground">Total</p>
+              <p className="text-lg font-black tabular-nums">{formatter(total)}</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-md border bg-background/70">
+          {chartRows.map((row, index) => {
+            const percent = total > 0 ? (row.value / total) * 100 : 0;
+
+            return (
+              <div className="flex items-center gap-3 border-b px-3 py-2 text-xs last:border-b-0" key={row.channelId}>
+                <span
+                  className="size-3 shrink-0 rounded-sm"
+                  style={{ backgroundColor: row.value > 0 ? getChannelChartColor(index) : "hsl(var(--muted))" }}
+                />
+                <span className="min-w-0 flex-1 truncate font-semibold text-foreground">{row.title}</span>
+                <span className="whitespace-nowrap font-black tabular-nums">{formatter(row.value)}</span>
+                <span className="w-12 text-right font-black tabular-nums text-muted-foreground">
+                  {formatPercent(percent)}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function ChannelBreakdownTable({
+  rows,
+  canViewRevenue
+}: {
+  rows: ComparisonChannelBreakdownRow[];
+  canViewRevenue: boolean;
+}) {
+  return (
+    <Card className="shadow-sm">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <BarChart3 className="size-4 text-primary" />
+          Channel Breakdown
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="overflow-x-auto">
+        <table className={canViewRevenue ? "w-full min-w-[84rem] text-sm" : "w-full min-w-[64rem] text-sm"}>
+          <thead>
+            <tr className="border-b text-xs font-black uppercase text-muted-foreground">
+              <th className="px-3 py-2 text-left">Channel</th>
+              <th className="px-3 py-2 text-right">Range 1 Views</th>
+              <th className="px-3 py-2 text-right">Range 2 Views</th>
+              <th className="px-3 py-2 text-right">R2-R1 Views</th>
+              <th className="px-3 py-2 text-right">Range 1 Watch Hrs</th>
+              <th className="px-3 py-2 text-right">Range 2 Watch Hrs</th>
+              <th className="px-3 py-2 text-right">R2-R1 Watch Hrs</th>
+              <th className="px-3 py-2 text-right">Range 1 Subs</th>
+              <th className="px-3 py-2 text-right">Range 2 Subs</th>
+              <th className="px-3 py-2 text-right">R2-R1 Subs</th>
+              {canViewRevenue ? (
+                <>
+                  <th className="px-3 py-2 text-right">Range 1 Revenue</th>
+                  <th className="px-3 py-2 text-right">Range 2 Revenue</th>
+                  <th className="px-3 py-2 text-right">R2-R1 Revenue</th>
+                </>
+              ) : null}
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {rows.map((row) => {
+              const primarySubscribers = calculateNetSubscribers(row.primary);
+              const comparisonSubscribers = calculateNetSubscribers(row.comparison);
+
+              return (
+                <tr key={row.channelId} className="bg-background/60">
+                  <td className="max-w-[18rem] px-3 py-3 align-middle font-semibold text-foreground">
+                    <span className="line-clamp-2">{row.title}</span>
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">
+                    {formatCompactNumber(row.primary.views)}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">
+                    {formatCompactNumber(row.comparison.views)}
+                  </td>
+                  <td
+                    className={`whitespace-nowrap px-3 py-3 text-right font-black tabular-nums ${getSignedMetricClass(
+                      row.deltas.views.absolute
+                    )}`}
+                  >
+                    {formatSignedCompactNumber(row.deltas.views.absolute)}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">
+                    {formatCompactNumber(row.primary.estimatedMinutesWatched / 60)}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">
+                    {formatCompactNumber(row.comparison.estimatedMinutesWatched / 60)}
+                  </td>
+                  <td
+                    className={`whitespace-nowrap px-3 py-3 text-right font-black tabular-nums ${getSignedMetricClass(
+                      row.deltas.watchTime.absolute
+                    )}`}
+                  >
+                    {formatSignedCompactNumber(row.deltas.watchTime.absolute / 60)}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">
+                    {formatSignedCompactNumber(primarySubscribers)}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">
+                    {formatSignedCompactNumber(comparisonSubscribers)}
+                  </td>
+                  <td
+                    className={`whitespace-nowrap px-3 py-3 text-right font-black tabular-nums ${getSignedMetricClass(
+                      row.deltas.subscribers.absolute
+                    )}`}
+                  >
+                    {formatSignedCompactNumber(row.deltas.subscribers.absolute)}
+                  </td>
+                  {canViewRevenue ? (
+                    <>
+                      <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">
+                        {formatCurrency(row.primary.estimatedRevenue)}
+                      </td>
+                      <td className="whitespace-nowrap px-3 py-3 text-right font-semibold tabular-nums">
+                        {formatCurrency(row.comparison.estimatedRevenue)}
+                      </td>
+                      <td
+                        className={`whitespace-nowrap px-3 py-3 text-right font-black tabular-nums ${getSignedMetricClass(
+                          row.deltas.revenue.absolute
+                        )}`}
+                      >
+                        {formatSignedCurrency(row.deltas.revenue.absolute)}
+                      </td>
+                    </>
+                  ) : null}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -607,6 +1078,38 @@ function getDashboardSyncChannels(channelId: string, channels: Array<{ channelId
   return channels.filter((channel) => channel.channelId === channelId);
 }
 
+function buildCompareReportHref({
+  channels,
+  comparisonEndDate,
+  comparisonStartDate,
+  primaryEndDate,
+  primaryStartDate
+}: {
+  channels: Array<{ channelId: string }>;
+  comparisonEndDate: string;
+  comparisonStartDate: string;
+  primaryEndDate: string;
+  primaryStartDate: string;
+}) {
+  const query = new URLSearchParams({
+    comparisonEndDate,
+    comparisonStartDate,
+    primaryEndDate,
+    primaryStartDate,
+    report: "channel-compare"
+  });
+
+  for (const channel of channels) {
+    query.append("channel", channel.channelId);
+  }
+
+  for (const columnId of CHANNEL_COMPARE_COLUMN_IDS) {
+    query.append("column", columnId);
+  }
+
+  return `/api/reports/monthly?${query.toString()}`;
+}
+
 async function hasCompleteComparisonDataAfterSync({
   channels,
   primaryStartDate,
@@ -728,8 +1231,20 @@ function formatSignedCurrency(value: number) {
   }).format(value);
 }
 
+function getSignedMetricClass(value: number) {
+  return value >= 0 ? "text-emerald-700 dark:text-emerald-300" : "text-red-700 dark:text-red-300";
+}
+
+function getChannelChartColor(index: number) {
+  return CHANNEL_CHART_COLORS[index % CHANNEL_CHART_COLORS.length];
+}
+
 function formatSignedPercent(value: number) {
   return `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
+}
+
+function formatPercent(value: number) {
+  return `${value.toFixed(1)}%`;
 }
 
 function toVideoTableRows(rows: VideoPerformanceRow[], metric: "views" | "revenue") {
